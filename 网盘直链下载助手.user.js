@@ -655,7 +655,10 @@
                 // from the current page), and those were fine for the other five pans. But
                 let idmHeaders = {};
                 if (/d\.pcs\.baidu\.com/.test(href)) idmHeaders['User-Agent'] = 'pan.baidu.com';
-                if (/xunlei\.com/.test(href)) idmHeaders['Cookie'] = base.getCookie('__pus') || base.getCookie('__puus') || '';
+                if (/xunlei\.com/.test(href)) {
+                    const xunleiCookie = xunlei && xunlei._getAuthCookie ? xunlei._getAuthCookie() : '';
+                    if (xunleiCookie) idmHeaders['Cookie'] = xunleiCookie;
+                }
                 const res = await base.sendLinkToIDM(href, btn.data('filename'), btn.data('filesize') || 0, idmHeaders);
                 btn.attr('data-processing', 'false');
                 btn.removeClass('is-loading');
@@ -711,16 +714,15 @@
             let out = {};
             for (let key in headers) {
                 const value = typeof headers[key] === 'object' ? JSON.stringify(headers[key]) : String(headers[key]);
+                // 空 header 值（如 Cookie:''）会让部分 CDN 返回 403，直接跳过
+                if (!value) continue;
                 out[key.toLowerCase().split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('-')] = value;
             }
             if (addDefault) return out;
             return {
-                "Dnt": "",
                 "Cache-Control": "no-cache",
                 "Pragma": "no-cache",
-                "Expires": "0",
                 "User-Agent": navigator.userAgent,
-                "Origin": location.origin,
                 "Referer": `${location.origin}/`,
                 ...out
             };
@@ -2157,9 +2159,23 @@ base.iframeDownload(e.currentTarget.dataset.link);
             '.file-menu',
             '.source-list-menu',
         ],
+        // 迅雷直链需要 userid/deviceid 等本地 cookie，纯签名 URL 过不了 CDN 校验
+        _getAuthCookie() {
+            let keys = ['userid', 'deviceid', 'XLA_CI', 'xl_fp_rt'];
+            let parts = [];
+            for (let k of keys) {
+                let v = base.getCookie(k);
+                if (v) parts.push(`${k}=${v}`);
+            }
+            return parts.join('; ');
+        },
         convertLinkToAria(link, filename, ua) {
             filename = base.fixFilename(filename);
-            return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 16 -s 16 -k 1M`);
+            let cookie = this._getAuthCookie();
+            let cookieStr = cookie ? ` --header "Cookie: ${cookie}"` : '';
+            let uaStr = ` --header "User-Agent: ${navigator.userAgent}"`;
+            // 迅雷 CDN 拒绝同一 URL 的多连接下载，只能单线程
+            return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 1 -s 1${cookieStr}${uaStr}`);
         },
         convertLinkToBC(link, filename, ua) {
             let bc = `AA/${encodeURIComponent(filename)}/?url=${encodeURIComponent(link)}ZZ`;
@@ -2168,7 +2184,9 @@ base.iframeDownload(e.currentTarget.dataset.link);
         convertLinkToCurl(link, filename, ua) {
             let terminal = base.getValue('setting_terminal_type');
             filename = base.fixFilename(filename);
-            return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}"`);
+            let cookie = this._getAuthCookie();
+            let cookieStr = cookie ? ` -b "${cookie}"` : '';
+            return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}"${cookieStr} -H "User-Agent: ${navigator.userAgent}"`);
         },
         addPageListener() {
                     doc.on('click', '.pl-button-mode', async (e) => {
@@ -2475,6 +2493,11 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 return 'fail';
             }
             let url = `${rpc.domain}:${rpc.port}${rpc.path}`;
+            let authCookie = this._getAuthCookie ? this._getAuthCookie() : '';
+            // 迅雷 CDN 要求 cookie + 浏览器 UA，缺一个都会被断连
+            let rpcHeader = authCookie
+                ? [`Cookie: ${authCookie}`, `User-Agent: ${navigator.userAgent}`]
+                : [];
             let rpcData = {
                 id: new Date().getTime(),
                 jsonrpc: '2.0',
@@ -2482,7 +2505,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 params: [`token:${rpc.token}`, [link], {
                     dir: rpc.dir,
                     out: base.safeRpcFilename(filename),
-                    header: []
+                    header: rpcHeader
                 }]
             };
             try {
