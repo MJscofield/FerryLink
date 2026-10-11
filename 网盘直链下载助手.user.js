@@ -714,7 +714,7 @@
             let out = {};
             for (let key in headers) {
                 const value = typeof headers[key] === 'object' ? JSON.stringify(headers[key]) : String(headers[key]);
-                // 空 header 值（如 Cookie:''）会让部分 CDN 返回 403，直接跳过
+                // 空值的 header（Cookie:'' 之类）发出去部分 CDN 会 403，跳过
                 if (!value) continue;
                 out[key.toLowerCase().split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('-')] = value;
             }
@@ -839,13 +839,17 @@
             /* IDM filled, copy buttons outlined. */
             button.pl-item-btn { background: ${color} !important; padding: 4px 8px !important; border-radius: 6px !important; line-height: 1 !important; cursor: pointer !important; color: #fff !important; border: 0 !important; height: 32px !important; box-sizing: border-box !important; display: inline-flex !important; align-items: center !important; justify-content: center !important; white-space: nowrap !important; transition: opacity 180ms ease !important; }
             button.pl-item-btn.pl-btn-primary.listener-link-copy,
-            button.pl-item-btn.pl-btn-primary.listener-link-api-btn { background: #fff !important; color: #111 !important; border: 1px solid #e6e8eb !important; }
+            button.pl-item-btn.pl-btn-primary.listener-link-api-btn,
+            button.pl-item-btn.pl-btn-primary.listener-copy-aria { background: #fff !important; color: #111 !important; border: 1px solid #e6e8eb !important; }
             button.pl-item-btn.pl-btn-primary.listener-link-copy:hover,
-            button.pl-item-btn.pl-btn-primary.listener-link-api-btn:hover { background: #f5f6f7 !important; opacity: 1 !important; }
+            button.pl-item-btn.pl-btn-primary.listener-link-api-btn:hover,
+            button.pl-item-btn.pl-btn-primary.listener-copy-aria:hover { background: #f5f6f7 !important; opacity: 1 !important; }
             button.pl-item-btn.pl-btn-primary.listener-link-copy .pl-ico,
-            button.pl-item-btn.pl-btn-primary.listener-link-api-btn .pl-ico { stroke: #787774; }
+            button.pl-item-btn.pl-btn-primary.listener-link-api-btn .pl-ico,
+            button.pl-item-btn.pl-btn-primary.listener-copy-aria .pl-ico { stroke: #787774; }
             button.pl-item-btn.pl-btn-primary.listener-link-copy:hover .pl-ico,
-            button.pl-item-btn.pl-btn-primary.listener-link-api-btn:hover .pl-ico { stroke: #111; }
+            button.pl-item-btn.pl-btn-primary.listener-link-api-btn:hover .pl-ico,
+            button.pl-item-btn.pl-btn-primary.listener-copy-aria:hover .pl-ico { stroke: #111; }
             button.pl-item-btn:hover { opacity: 0.9; }
             button.pl-item-btn:active { filter: brightness(.9); }
             button.pl-item-btn:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
@@ -2159,7 +2163,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
             '.file-menu',
             '.source-list-menu',
         ],
-        // 迅雷直链需要 userid/deviceid 等本地 cookie，纯签名 URL 过不了 CDN 校验
+        // 迅雷的 CDN 校验签名 URL 之外还要本地 cookie（userid/deviceid），纯链接过不去
         _getAuthCookie() {
             let keys = ['userid', 'deviceid', 'XLA_CI', 'xl_fp_rt'];
             let parts = [];
@@ -2174,7 +2178,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
             let cookie = this._getAuthCookie();
             let cookieStr = cookie ? ` --header "Cookie: ${cookie}"` : '';
             let uaStr = ` --header "User-Agent: ${navigator.userAgent}"`;
-            // 迅雷 CDN 拒绝同一 URL 的多连接下载，只能单线程
+            // 同一 URL 开多个 Range 连接会被迅雷 CDN 断开，aria2 只能单线程
             return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 1 -s 1${cookieStr}${uaStr}`);
         },
         convertLinkToBC(link, filename, ua) {
@@ -2221,6 +2225,14 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 e.preventDefault();
                 try { base.setClipboard(decodeURIComponent(e.target.dataset.link)); } catch(e) { base.setClipboard(e.target.dataset.link); }
                 $(e.target).text('复制成功，快去粘贴吧！').animate({opacity: '0.5'}, "slow");
+            });
+            doc.on('click', '.listener-copy-aria', async (e) => {
+                const $btn = $(e.currentTarget);
+                const raw = $btn.attr('data-arialink') || '';
+                try { base.setClipboard(decodeURIComponent(raw)); } catch(err) { base.setClipboard(raw); }
+                const orig = $btn.html();
+                $btn.html(orig.replace('复制下载命令行', '已复制'));
+                setTimeout(() => { $btn.html(orig); }, 1500);
             });
             doc.on('click', '.listener-link-rpc', async (e) => {
                 let target = $(e.currentTarget);
@@ -2444,9 +2456,12 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 if (mode === 'aria') {
                     let alink = this.convertLinkToAria(dlink, filename, navigator.userAgent);
                     alinkAllText += alink + '\r\n';
-                    content += `<div class="pl-item">
+                    content += `<div class="pl-item pl-row-api">
                                     <div class="pl-item-name listener-tip" data-size="${size}">${filename}</div>
-                                    <a class="pl-item-link listener-link-aria" href="${base.esc(alink)}" title="点击复制aria2c链接" data-filename="${base.esc(filename)}" data-link="${base.esc(alink)}">${base.esc(decodeURIComponent(alink))}</a> </div>`;
+                                    <a class="pl-item-link" href="javascript:void(0)" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}">${base.esc(dlink)}</a>
+                                    <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
+                                    <button class="pl-item-btn pl-btn-primary listener-copy-aria" data-arialink="${alink}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制下载命令行</button>
+                                    </div>`;
                 }
                 if (mode === 'rpc') {
                     content += `<div class="pl-item">
@@ -2470,8 +2485,6 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 }
             });
             content += '</div>';
-            if (mode === 'aria')
-                content += `<div class="pl-extra"><button class="pl-btn-primary listener-copy-all" data-link="${base.esc(alinkAllText)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制全部链接</button></div>`;
             if (mode === 'rpc') {
                 let rpc = base.getValue('setting_rpc_domain') + ':' + base.getValue('setting_rpc_port') + base.getValue('setting_rpc_path');
                 content += `<div class="pl-extra"><button class="pl-btn-primary listener-send-rpc"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>发送全部链接</button><button title="${rpc}" class="pl-btn-primary pl-btn-warning listener-open-setting" style="margin-left: 10px"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置 RPC 参数（当前为：${rpc}）</button></div>`;
@@ -2494,7 +2507,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
             }
             let url = `${rpc.domain}:${rpc.port}${rpc.path}`;
             let authCookie = this._getAuthCookie ? this._getAuthCookie() : '';
-            // 迅雷 CDN 要求 cookie + 浏览器 UA，缺一个都会被断连
+            // cookie 和 UA 缺一个，CDN 都会直接断连
             let rpcHeader = authCookie
                 ? [`Cookie: ${authCookie}`, `User-Agent: ${navigator.userAgent}`]
                 : [];
