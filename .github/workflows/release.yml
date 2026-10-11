@@ -46,4 +46,4 @@ jobs:
           gh release create "v$VERSION" \
             --title "FerryLink v$VERSION" \
             --generate-notes \
-            --verify-tag
+            --target "$GITHUB_SHA"
