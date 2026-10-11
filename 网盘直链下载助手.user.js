@@ -714,16 +714,14 @@
             let out = {};
             for (let key in headers) {
                 const value = typeof headers[key] === 'object' ? JSON.stringify(headers[key]) : String(headers[key]);
+                if (!value) continue;
                 out[key.toLowerCase().split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('-')] = value;
             }
             if (addDefault) return out;
             return {
-                "Dnt": "",
                 "Cache-Control": "no-cache",
                 "Pragma": "no-cache",
-                "Expires": "0",
                 "User-Agent": navigator.userAgent,
-                "Origin": location.origin,
                 "Referer": `${location.origin}/`,
                 ...out
             };
