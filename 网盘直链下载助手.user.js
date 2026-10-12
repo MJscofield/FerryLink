@@ -4,7 +4,13 @@
 // @version           1.2.5
 // @author            Wjavan
 // @description       支持百度/阿里/天翼/迅雷/夸克/移动六大网盘直链下载。支持 HTTP/JSON-RPC/cURL，推送至 IDM/XDown/Aria2/NDM/Motrix/终端。基于油小猴(youxiaohou.com)的网盘直链下载助手修改。
-// @description:en    Supports Baidu/Ali/Tianyi/Xunlei/Quark/China-Mobile cloud drives. Protocols: HTTP/JSON-RPC/cURL. All configs are embedded locally.A fork of youxiaohou's Pan Download Helper.
+// @copyright         2026, Wjavan (https://github.com/Wjavan/FerryLink)
+// @license           GPL-3.0
+// @homepage          https://github.com/Wjavan/FerryLink
+// @website           https://github.com/Wjavan/FerryLink
+// @source            https://github.com/Wjavan/FerryLink
+// @supportURL        https://github.com/Wjavan/FerryLink/issues
+// @icon              data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIiB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJiZyIgeDE9IjAiIHkxPSIwIiB4Mj0iMC4yNSIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzFFNUFBMCIvPjxzdG9wIG9mZnNldD0iMC41NSIgc3RvcC1jb2xvcj0iIzEyM0M3MiIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBBMjM0NCIvPjwvbGluZWFyR3JhZGllbnQ+PGxpbmVhckdyYWRpZW50IGlkPSJodWxsIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjRkZCNjNGIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjRTg3NjBGIi8+PC9saW5lYXJHcmFkaWVudD48Y2xpcFBhdGggaWQ9InNxdWlyY2xlIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcng9IjExNiIvPjwvY2xpcFBhdGg+PC9kZWZzPjxnIGNsaXAtcGF0aD0idXJsKCNzcXVpcmNsZSkiPjxyZWN0IHdpZHRoPSI1MTIiIGhlaWdodD0iNTEyIiBmaWxsPSJ1cmwoI2JnKSIvPjxwYXRoIGQ9Ik0wLDQzNCBDIDY4LDQwOCAxMjQsNDA4IDE4MCw0MzQgQyAyMzYsNDYwIDI5Miw0NjAgMzQ4LDQzNCBDIDQwNCw0MDggNDYwLDQwOCA1MTIsNDM0IEw1MTIsNTEyIEwwLDUxMiBaIgogICAgICAgICAgZmlsbD0iIzFGNUU5QyIvPjxwYXRoIGQ9Ik0wLDQ3MiBDIDc2LDQ0NiAxMzIsNDQ2IDE4OCw0NzIgQyAyNDQsNDk4IDMwMCw0OTggMzU2LDQ3MiBDIDQxMiw0NDYgNDY4LDQ0NiA1MTIsNDcyIEw1MTIsNTEyIEwwLDUxMiBaIgogICAgICAgICAgZmlsbD0iIzNCOENEMCIvPjxyZWN0IHg9IjIzNiIgeT0iNjAiIHdpZHRoPSI0NCIgaGVpZ2h0PSIxNzAiIHJ4PSIxMCIgZmlsbD0iI0ZGRkZGRiIvPjxwYXRoIGQ9Ik0xNjIsMjI2IEwzNTAsMjI2IEwyNTYsMzIwIFoiIGZpbGw9IiNGRkZGRkYiLz48cmVjdCB4PSIyMTgiIHk9IjMzMiIgd2lkdGg9Ijc2IiBoZWlnaHQ9IjQwIiByeD0iMTIiIGZpbGw9IiNGRkZGRkYiLz48cmVjdCB4PSIyMzYiIHk9IjM0NCIgd2lkdGg9IjQwIiBoZWlnaHQ9IjExIiByeD0iNSIgZmlsbD0iIzdGQjNFMCIvPjxwYXRoIGQ9Ik0xNjIsMzc4IEwzNTAsMzc4IFEzNjAsMzc4IDM1NywzODcgTDM0MCw0MTAgUTMzNiw0MTYgMzI4LDQxNiBMMTg0LDQxNiBRMTc2LDQxNiAxNzIsNDEwIEwxNTUsMzg3IFExNTIsMzc4IDE2MiwzNzggWiIKICAgICAgICAgIGZpbGw9InVybCgjaHVsbCkiLz48cmVjdCB4PSIxNDkiIHk9IjM2NiIgd2lkdGg9IjIxNCIgaGVpZ2h0PSIxMiIgcng9IjYiIGZpbGw9IiNGRkZGRkYiLz48L2c+PC9zdmc+
 // @match             *://pan.baidu.com/disk/home*
 // @match             *://yun.baidu.com/disk/home*
 // @match             *://pan.baidu.com/disk/main*
@@ -17,6 +23,7 @@
 // @match             *://pan.quark.cn/*
 // @match             *://yun.139.com/*
 // @match             *://caiyun.139.com/*
+// @run-at            document-idle
 // @require           https://unpkg.com/jquery@3.7.0/dist/jquery.min.js
 // @require           https://unpkg.com/sweetalert2@10.16.6/dist/sweetalert2.all.min.js
 // @require           https://unpkg.com/js-md5@0.7.3/build/md5.min.js
@@ -34,7 +41,6 @@
 // @connect           caiyun.139.com
 // @connect           localhost
 // @connect           127.0.0.1
-// @run-at            document-idle
 // @grant             GM_xmlhttpRequest
 // @grant             GM_setClipboard
 // @grant             GM_setValue
@@ -44,10 +50,8 @@
 // @grant             GM_cookie
 // @grant             GM_openInTab
 // @grant             window.close
-// @icon              data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIiB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJiZyIgeDE9IjAiIHkxPSIwIiB4Mj0iMC4yNSIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzFFNUFBMCIvPjxzdG9wIG9mZnNldD0iMC41NSIgc3RvcC1jb2xvcj0iIzEyM0M3MiIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBBMjM0NCIvPjwvbGluZWFyR3JhZGllbnQ+PGxpbmVhckdyYWRpZW50IGlkPSJodWxsIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjRkZCNjNGIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjRTg3NjBGIi8+PC9saW5lYXJHcmFkaWVudD48Y2xpcFBhdGggaWQ9InNxdWlyY2xlIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcng9IjExNiIvPjwvY2xpcFBhdGg+PC9kZWZzPjxnIGNsaXAtcGF0aD0idXJsKCNzcXVpcmNsZSkiPjxyZWN0IHdpZHRoPSI1MTIiIGhlaWdodD0iNTEyIiBmaWxsPSJ1cmwoI2JnKSIvPjxwYXRoIGQ9Ik0wLDQzNCBDIDY4LDQwOCAxMjQsNDA4IDE4MCw0MzQgQyAyMzYsNDYwIDI5Miw0NjAgMzQ4LDQzNCBDIDQwNCw0MDggNDYwLDQwOCA1MTIsNDM0IEw1MTIsNTEyIEwwLDUxMiBaIgogICAgICAgICAgZmlsbD0iIzFGNUU5QyIvPjxwYXRoIGQ9Ik0wLDQ3MiBDIDc2LDQ0NiAxMzIsNDQ2IDE4OCw0NzIgQyAyNDQsNDk4IDMwMCw0OTggMzU2LDQ3MiBDIDQxMiw0NDYgNDY4LDQ0NiA1MTIsNDcyIEw1MTIsNTEyIEwwLDUxMiBaIgogICAgICAgICAgZmlsbD0iIzNCOENEMCIvPjxyZWN0IHg9IjIzNiIgeT0iNjAiIHdpZHRoPSI0NCIgaGVpZ2h0PSIxNzAiIHJ4PSIxMCIgZmlsbD0iI0ZGRkZGRiIvPjxwYXRoIGQ9Ik0xNjIsMjI2IEwzNTAsMjI2IEwyNTYsMzIwIFoiIGZpbGw9IiNGRkZGRkYiLz48cmVjdCB4PSIyMTgiIHk9IjMzMiIgd2lkdGg9Ijc2IiBoZWlnaHQ9IjQwIiByeD0iMTIiIGZpbGw9IiNGRkZGRkYiLz48cmVjdCB4PSIyMzYiIHk9IjM0NCIgd2lkdGg9IjQwIiBoZWlnaHQ9IjExIiByeD0iNSIgZmlsbD0iIzdGQjNFMCIvPjxwYXRoIGQ9Ik0xNjIsMzc4IEwzNTAsMzc4IFEzNjAsMzc4IDM1NywzODcgTDM0MCw0MTAgUTMzNiw0MTYgMzI4LDQxNiBMMTg0LDQxNiBRMTc2LDQxNiAxNzIsNDEwIEwxNTUsMzg3IFExNTIsMzc4IDE2MiwzNzggWiIKICAgICAgICAgIGZpbGw9InVybCgjaHVsbCkiLz48cmVjdCB4PSIxNDkiIHk9IjM2NiIgd2lkdGg9IjIxNCIgaGVpZ2h0PSIxMiIgcng9IjYiIGZpbGw9IiNGRkZGRkYiLz48L2c+PC9zdmc+
-// @license           GPL-3.0
-// @downloadURL https://update.greasyfork.org/scripts/595544/%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B.user.js
 // @updateURL https://update.greasyfork.org/scripts/595544/%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B.meta.js
+// @downloadURL https://update.greasyfork.org/scripts/595544/%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B.user.js
 // ==/UserScript==
 (function () {
     'use strict';
