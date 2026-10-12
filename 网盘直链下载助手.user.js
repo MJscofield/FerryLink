@@ -4,7 +4,7 @@
 // @version           1.2.4
 // @author            Wjavan
 // @description       支持百度/阿里/天翼/迅雷/夸克/移动六大网盘直链下载。支持 HTTP/JSON-RPC/cURL，推送至 IDM/XDown/Aria2/NDM/Motrix/终端。基于油小猴(youxiaohou.com)的网盘直链下载助手修改。
-// @copyright         2026, Wjavan (https://github.com/Wjavan/FerryLink)
+// @copyright         2026, Wjavan (https://github.com/Wjavan)
 // @license           GPL-3.0
 // @homepage          https://github.com/Wjavan/FerryLink
 // @website           https://github.com/Wjavan/FerryLink
