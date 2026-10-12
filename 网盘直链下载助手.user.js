@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              FerryLink
 // @namespace         https://github.com/Wjavan/FerryLink
-// @version           1.2.5
+// @version           1.2.4
 // @author            Wjavan
 // @description       支持百度/阿里/天翼/迅雷/夸克/移动六大网盘直链下载。支持 HTTP/JSON-RPC/cURL，推送至 IDM/XDown/Aria2/NDM/Motrix/终端。基于油小猴(youxiaohou.com)的网盘直链下载助手修改。
 // @copyright         2026, Wjavan (https://github.com/Wjavan/FerryLink)
@@ -212,7 +212,7 @@
         // throws (wrapped), and a failure just means we retry next load rather than blocking
         migrate() {
             const MARK = 'ferrylink_migrated_version';
-            const VERSION = '1.2.5';
+            const VERSION = '1.2.4';
             try {
                 if (GM_getValue(MARK, '') === VERSION) return;
                 // orphaned by removing share-page support
