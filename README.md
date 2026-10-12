@@ -2,6 +2,9 @@
 
 > 免费开源 · 六大网盘 · 多种下载协议 · 支持 IDM/Aria2/Motrix
 
+[![总安装量](https://img.shields.io/greasyfork/dt/595544?logo=greasyfork&logoColor=white&label=%E5%AE%89%E8%A3%85%E9%87%8F&color=blue)](https://greasyfork.org/scripts/595544)
+[![今日安装](https://img.shields.io/greasyfork/dd/595544?logo=greasyfork&logoColor=white&label=%E4%BB%8A%E6%97%A5%E5%AE%89%E8%A3%85&color=informational)](https://greasyfork.org/scripts/595544)
+[![版本](https://img.shields.io/greasyfork/v/595544?logo=greasyfork&logoColor=white&label=Greasy%20Fork&color=orange)](https://greasyfork.org/scripts/595544)
 [![Tampermonkey](https://img.shields.io/badge/Tampermonkey-v4.13-brightgreen.svg?style=flat-square)]()
 [![Chrome](https://img.shields.io/badge/Chrome-90+-brightgreen.svg?style=flat-square)]()
 [![Edge](https://img.shields.io/badge/Edge-88+-brightgreen.svg?style=flat-square)]()
