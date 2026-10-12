@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              FerryLink
 // @namespace         https://github.com/Wjavan/FerryLink
-// @version           1.2.4
+// @version           1.2.5
 // @author            Wjavan
 // @description       支持百度/阿里/天翼/迅雷/夸克/移动六大网盘直链下载。支持 HTTP/JSON-RPC/cURL，推送至 IDM/XDown/Aria2/NDM/Motrix/终端。基于油小猴(youxiaohou.com)的网盘直链下载助手修改。
 // @description:en    Supports Baidu/Ali/Tianyi/Xunlei/Quark/China-Mobile cloud drives. Protocols: HTTP/JSON-RPC/cURL. All configs are embedded locally.A fork of youxiaohou's Pan Download Helper.
@@ -44,7 +44,7 @@
 // @grant             GM_cookie
 // @grant             GM_openInTab
 // @grant             window.close
-// @icon              data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4Ij48cmVjdCB3aWR0aD0iMTI4IiBoZWlnaHQ9IjEyOCIgcng9IjIyIiBmaWxsPSIjMmI3ZmZmIi8+PHBhdGggZD0iTTY0IDMwdjQ2IiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMTIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxwYXRoIGQ9Ik00NCA1OGwyMCAyMCAyMC0yMCIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGZpbGw9Im5vbmUiLz48cmVjdCB4PSIzNCIgeT0iOTAiIHdpZHRoPSI2MCIgaGVpZ2h0PSIxMCIgcng9IjUiIGZpbGw9IiNmZmYiLz48L3N2Zz4=
+// @icon              data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIiB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJiZyIgeDE9IjAiIHkxPSIwIiB4Mj0iMC4yNSIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzFFNUFBMCIvPjxzdG9wIG9mZnNldD0iMC41NSIgc3RvcC1jb2xvcj0iIzEyM0M3MiIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzBBMjM0NCIvPjwvbGluZWFyR3JhZGllbnQ+PGxpbmVhckdyYWRpZW50IGlkPSJodWxsIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjRkZCNjNGIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjRTg3NjBGIi8+PC9saW5lYXJHcmFkaWVudD48Y2xpcFBhdGggaWQ9InNxdWlyY2xlIj48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcng9IjExNiIvPjwvY2xpcFBhdGg+PC9kZWZzPjxnIGNsaXAtcGF0aD0idXJsKCNzcXVpcmNsZSkiPjxyZWN0IHdpZHRoPSI1MTIiIGhlaWdodD0iNTEyIiBmaWxsPSJ1cmwoI2JnKSIvPjxwYXRoIGQ9Ik0wLDQzNCBDIDY4LDQwOCAxMjQsNDA4IDE4MCw0MzQgQyAyMzYsNDYwIDI5Miw0NjAgMzQ4LDQzNCBDIDQwNCw0MDggNDYwLDQwOCA1MTIsNDM0IEw1MTIsNTEyIEwwLDUxMiBaIgogICAgICAgICAgZmlsbD0iIzFGNUU5QyIvPjxwYXRoIGQ9Ik0wLDQ3MiBDIDc2LDQ0NiAxMzIsNDQ2IDE4OCw0NzIgQyAyNDQsNDk4IDMwMCw0OTggMzU2LDQ3MiBDIDQxMiw0NDYgNDY4LDQ0NiA1MTIsNDcyIEw1MTIsNTEyIEwwLDUxMiBaIgogICAgICAgICAgZmlsbD0iIzNCOENEMCIvPjxyZWN0IHg9IjIzNiIgeT0iNjAiIHdpZHRoPSI0NCIgaGVpZ2h0PSIxNzAiIHJ4PSIxMCIgZmlsbD0iI0ZGRkZGRiIvPjxwYXRoIGQ9Ik0xNjIsMjI2IEwzNTAsMjI2IEwyNTYsMzIwIFoiIGZpbGw9IiNGRkZGRkYiLz48cmVjdCB4PSIyMTgiIHk9IjMzMiIgd2lkdGg9Ijc2IiBoZWlnaHQ9IjQwIiByeD0iMTIiIGZpbGw9IiNGRkZGRkYiLz48cmVjdCB4PSIyMzYiIHk9IjM0NCIgd2lkdGg9IjQwIiBoZWlnaHQ9IjExIiByeD0iNSIgZmlsbD0iIzdGQjNFMCIvPjxwYXRoIGQ9Ik0xNjIsMzc4IEwzNTAsMzc4IFEzNjAsMzc4IDM1NywzODcgTDM0MCw0MTAgUTMzNiw0MTYgMzI4LDQxNiBMMTg0LDQxNiBRMTc2LDQxNiAxNzIsNDEwIEwxNTUsMzg3IFExNTIsMzc4IDE2MiwzNzggWiIKICAgICAgICAgIGZpbGw9InVybCgjaHVsbCkiLz48cmVjdCB4PSIxNDkiIHk9IjM2NiIgd2lkdGg9IjIxNCIgaGVpZ2h0PSIxMiIgcng9IjYiIGZpbGw9IiNGRkZGRkYiLz48L2c+PC9zdmc+
 // @license           GPL-3.0
 // @downloadURL https://update.greasyfork.org/scripts/595544/%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B.user.js
 // @updateURL https://update.greasyfork.org/scripts/595544/%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B.meta.js
@@ -208,7 +208,7 @@
         // throws (wrapped), and a failure just means we retry next load rather than blocking
         migrate() {
             const MARK = 'ferrylink_migrated_version';
-            const VERSION = '1.2.4';
+            const VERSION = '1.2.5';
             try {
                 if (GM_getValue(MARK, '') === VERSION) return;
                 // orphaned by removing share-page support
