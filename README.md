@@ -60,6 +60,7 @@
 **方法一：直接安装（推荐）**
 
 1. 打开 [网盘直链下载助手.user.js](./网盘直链下载助手.user.js)
+> 打不开可使用镜像地址：[网盘直链下载助手.user.js](https://cdn.jsdelivr.net/gh/Wjavan/FerryLink@main/%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B.user.js)
 2. Tampermonkey 会提示安装，点击 **安装** 即可
 
 **方法二：从 GreasyFork 安装**
