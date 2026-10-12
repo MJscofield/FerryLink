@@ -1,16 +1,22 @@
-# 🚀 FerryLink
+<p align="center">
+   <img src="./icon.svg" width="128" height="128" alt="FerryLink">
+</p>
 
-> 免费开源 · 六大网盘 · 多种下载协议 · 支持 IDM/Aria2/Motrix
+<h1 align="center">FerryLink</h1>
 
-[![总安装量](https://img.shields.io/greasyfork/dt/595544?logo=greasyfork&logoColor=white&label=%E5%AE%89%E8%A3%85%E9%87%8F&color=blue)](https://greasyfork.org/scripts/595544)
-[![今日安装](https://img.shields.io/greasyfork/dd/595544?logo=greasyfork&logoColor=white&label=%E4%BB%8A%E6%97%A5%E5%AE%89%E8%A3%85&color=informational)](https://greasyfork.org/scripts/595544)
-[![版本](https://img.shields.io/greasyfork/v/595544?logo=greasyfork&logoColor=white&label=Greasy%20Fork&color=orange)](https://greasyfork.org/scripts/595544)
-[![Tampermonkey](https://img.shields.io/badge/Tampermonkey-v4.13-brightgreen.svg?style=flat-square)]()
-[![Chrome](https://img.shields.io/badge/Chrome-90+-brightgreen.svg?style=flat-square)]()
-[![Edge](https://img.shields.io/badge/Edge-88+-brightgreen.svg?style=flat-square)]()
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Mac%20%7C%20Linux-blue?style=flat-square)]()
-[![License](https://img.shields.io/badge/License-GPL--3.0-lightgrey.svg?style=flat-square)](LICENSE)
-[![GreasyFork](https://img.shields.io/greasyfork/dt/595544?label=GreasyFork%20Installs&style=flat-square)](https://greasyfork.org/zh-CN/scripts/595544)
+<p align="center"><b>免费开源 · 六大网盘 · 多种下载协议 · 多种热门下载器</b></p>
+
+<p align="center">
+   <a href="https://greasyfork.org/zh-CN/scripts/595544"><img alt="GreasyFork 安装量" src="https://img.shields.io/greasyfork/dt/595544?label=GreasyFork%20%E5%AE%89%E8%A3%85%E9%87%8F&style=flat&labelColor=black&color=7B68EE&logo=greasyfork&logoColor=white"></a>
+   <img alt="许可证" src="https://img.shields.io/github/license/Wjavan/FerryLink?label=%E8%AE%B8%E5%8F%AF%E8%AF%81&style=flat&labelColor=black&color=grey&logo=gnu&logoColor=white">
+   <br/>
+   <img alt="Tampermonkey" src="https://img.shields.io/chrome-web-store/v/dhdgffkkebhmkfjojejmpbldmpobfkfo?label=Tampermonkey&style=flat&logo=tampermonkey&logoColor=white&labelColor=black&color=brightgreen">
+   <img alt="支持平台" src="https://img.shields.io/badge/%E6%94%AF%E6%8C%81%E5%B9%B3%E5%8F%B0-Windows_%7C_Mac_%7C_Linux-blueviolet?style=flat&logo=linux&logoColor=white&labelColor=black">
+   <br/>
+   <img alt="Chrome" src="https://img.shields.io/badge/Google%20Chrome-90%2B-yellow?style=flat&logo=googlechrome&logoColor=white&labelColor=black">
+   <img alt="Edge" src="https://img.shields.io/badge/Microsoft%20Edge-88%2B-blue?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzcuOCAyIDQuMyA0LjYgMy4xIDguNCA1LjQgNi41IDguMSA1LjUgMTEgNS41YzQuNCAwIDggMi45IDggNyAwIDEuOC0uNyAzLjUtMS45IDQuOCAyLjctMS42IDQuNC00LjUgNC40LTcuOEMyMS41IDUuNyAxNy4zIDIgMTIgMnpNMyAxMi41YzAgNC43IDMuOSA4LjUgOSA4LjUgMi4yIDAgNC4yLS44IDUuOC0yLjEtMS45LjYtMy45LjQtNS42LS42LTIuNi0xLjUtMy45LTQuMi0zLjYtNyAxLjUgMS4yIDIuNSAzIDIuNSA1LjEtLjctLjktMS4xLTItMS4xLTMuMnYtLjd6Ii8%2BPC9zdmc%2B&labelColor=black">
+   <img alt="Firefox" src="https://img.shields.io/badge/Mozilla%20Firefox-91%2B-orange?style=flat&logo=firefox&logoColor=white&labelColor=black">
+</p>
 
 ---
 
@@ -54,7 +60,7 @@
 
 | 浏览器 | 安装地址 |
 |--------|----------|
-| Chrome | [Chrome 网上应用店](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) |
+| Chrome | [Chrome 网上应用店](https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) |
 | Edge | [Microsoft Edge 扩展商店](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd) |
 | Firefox | [Firefox 附加组件](https://addons.mozilla.org/firefox/addon/tampermonkey/) |
 
@@ -62,13 +68,12 @@
 
 **方法一：直接安装（推荐）**
 
-1. 打开 [网盘直链下载助手.user.js](./网盘直链下载助手.user.js)
-> 打不开可使用镜像地址：[网盘直链下载助手.user.js](https://cdn.jsdelivr.net/gh/Wjavan/FerryLink@main/%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B.user.js)
+1. 打开 [网盘直链下载助手.user.js](https://raw.githubusercontent.com/Wjavan/FerryLink/main/网盘直链下载助手.user.js)
 2. Tampermonkey 会提示安装，点击 **安装** 即可
 
 **方法二：从 GreasyFork 安装**
 
-访问 [GreasyFork 页面](https://greasyfork.org/zh-CN/scripts/595544-ferrylink) 点击 **安装**
+访问 [GreasyFork 页面](https://greasyfork.org/zh-CN/scripts/595544-%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B) 点击 **安装**
 
 ---
 
@@ -121,16 +126,16 @@
 
 | 链接 | 地址 |
 |------|------|
-| 📦 GreasyFork 安装页 | https://greasyfork.org/zh-CN/scripts/595544 |
-| 🌐 项目主页 | https://github.com/Wjavan/FerryLink |
-| 🐛 提交 Issue | https://github.com/Wjavan/FerryLink/issues |
-| 🍴 查看 Forks | https://github.com/Wjavan/FerryLink/forks |
+| 📦 GreasyFork 安装页 | [greasyfork.org/zh-CN/scripts/595544](https://greasyfork.org/zh-CN/scripts/595544) |
+| 🌐 项目主页 | [github.com/Wjavan/FerryLink](https://github.com/Wjavan/FerryLink) |
+| 🐛 提交 Issue | [github.com/Wjavan/FerryLink/issues](https://github.com/Wjavan/FerryLink/issues) |
+| 🍴 查看 Forks | [github.com/Wjavan/FerryLink/forks](https://github.com/Wjavan/FerryLink/forks) |
 
 ---
 
 ## 🙏 致谢
 
-本脚本基于 [油小猴](https://www.youxiaohou.com/) 的「网盘直链下载助手」二次修改，在原版基础上修复了移动云盘无法获取下载地址、迅雷下载慢等问题，并将配置内嵌脚本。感谢原作者的优秀作品。
+本脚本基于 [油小猴](https://www.youxiaohou.com/) 的「网盘直链下载助手」二次修改，在原版基础上进行了功能增强与优化，并将配置内嵌脚本。感谢原作者的优秀作品。
 
 ---
 
