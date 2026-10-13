@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              FerryLink
 // @namespace         https://github.com/Wjavan/FerryLink
-// @version           1.2.4
+// @version           1.2.5
 // @author            Wjavan
 // @description       支持百度/阿里/天翼/迅雷/夸克/移动六大网盘直链下载。支持 HTTP/JSON-RPC/cURL，推送至 IDM/XDown/Aria2/NDM/Motrix/终端。基于油小猴(youxiaohou.com)的网盘直链下载助手修改。
 // @copyright         2026, Wjavan (https://github.com/Wjavan)
@@ -56,9 +56,7 @@
 // ==/UserScript==
 (function () {
     'use strict';
-    // the three @require libs load from a CDN. If unpkg is unreachable (offline,
-    // blocked network) the old code died on `$(document)` with a bare ReferenceError and the
-    // user saw nothing at all. Fail with a visible banner instead.
+            // npm 三个库走 unpkg CDN 拉取，没网时脚本直接 ReferenceError 死掉——加个横幅提示，至少让用户知道不是崩了
     if (typeof $ === 'undefined' || typeof Swal === 'undefined') {
         const missing = [typeof $ === 'undefined' ? 'jQuery' : null,
                          typeof Swal === 'undefined' ? 'SweetAlert2' : null]
@@ -117,9 +115,9 @@
             return toast.fire({title: text, icon: 'question'});
         }
     };
-    // still-live credentials that pre-fix versions used to mirror into
-    // page-accessible localStorage; getStorage/migrate pull these into the
-    // sandboxed GM store on first encounter and stop exposing them.
+                // 历史版本遗留的凭证之前是直写 localStorage 让页面读的；
+                // getStorage/migrate 在首次遇到时会把它们迁入沙箱 GM 存储，
+                // 之后就只读 GM 版，页面再也碰不到这些敏感数据。
     const LEGACY_LOCAL_KEYS = ['baiduyunPlugin_BDUSS', 'accessToken'];
     let base = {
         getCookie(name) {
@@ -143,20 +141,18 @@
         deleteValue(name) {
             GM_deleteValue(name);
         },
-        // alipan keeps rotating its own localStorage token (new access_token +
+                // 阿里页面的 token 会自己轮换（access_token + cna 都重新生成），脚本只能读页面上已经写好的那个
         getStorage(key) {
             let v = null;
-            // token and page-native keys (deviceid, credentials_*, captcha_*):
-            // keep reading localStorage as before. LEGACY_LOCAL_KEYS skip this
-            // and go through the GM-first migration path below.
+                        // 其他 key（deviceid、captcha_* 等）不是阿里自己的轮换机制，
+                        // 所以继续按老方式读 localStorage。LEGACY_LOCAL_KEYS 这批不走这条路，走 GM-first 迁移路径。
             if (key === 'token' || !LEGACY_LOCAL_KEYS.includes(key)) {
                 try { v = localStorage.getItem(key); } catch (e) { /* storage unavailable */ }
             }
             if (v === null || v === undefined) v = GM_getValue(key, null);
             if ((v === null || v === undefined) && LEGACY_LOCAL_KEYS.includes(key)) {
-                // one-time migration: a pre-fix install may have left this
-                // credential sitting only in localStorage. Pull it into GM
-                // storage and scrub it from the page-accessible copy.
+                                // 升级前版本的用户可能只在 localStorage 里留了这条凭证，
+                                // 迁一次：拉到 GM 存好，再把 localStorage 那一份删掉。
                 let legacy = null;
                 try { legacy = localStorage.getItem(key); } catch (e) { /* storage unavailable */ }
                 if (legacy !== null && legacy !== undefined) {
@@ -171,12 +167,12 @@
                 return v;
             }
         },
-        // ali access tokens are short-lived. When the stored one is at/past its
+                // 阿里 access_token 有效期很短，存到快过期时提前刷新
         async refreshAliToken(tk) {
             if (!tk || !tk.refresh_token) return tk;
             const now = Date.now();
             const exp = tk.expire_time ? Date.parse(tk.expire_time) : 0;
-            // refresh a minute early rather than racing the expiry
+                        // 提前一分钟刷新，避免正好卡点过期导致请求失败
             if (!exp || exp - now > 60000) return tk;
             try {
                 const res = await base.post(
@@ -197,10 +193,10 @@
             }
         },
         setStorage(key, value) {
-            // alipan's own page scripts read the ali token straight out of localStorage,
-            // so only that key is mirrored there. Every other credential (access tokens,
-            // BDUSS, captcha, device id, etc.) is kept solely in the sandboxed GM storage,
-            // which page-level XSS cannot read, instead of being exposed via localStorage.
+                        // 阿里页面自己的脚本会直接读 localStorage 里的 ali token，
+                        // 所以只把那个 key 留在 localStorage 做镜像；
+                        // 其他凭证（access_token、BDUSS、验证码、设备 ID 等）全关进 GM 沙箱，
+                        // 这样页面上的 XSS 也偷不走。
             let payload = value;
             if (this.isType(value) === 'object' || this.isType(value) === 'array') {
                 payload = JSON.stringify(value);
@@ -210,20 +206,19 @@
             }
             return GM_setValue(key, payload);
         },
-        // throws (wrapped), and a failure just means we retry next load rather than blocking
+                // 重试逻辑把错误包起来；失败不代表崩了，下次加载再试就行
         migrate() {
             const MARK = 'ferrylink_migrated_version';
-            const VERSION = '1.2.4';
+            const VERSION = '1.2.5';
             try {
                 if (GM_getValue(MARK, '') === VERSION) return;
-                // orphaned by removing share-page support
+                                // 分享页功能下掉后，这条注释对应的那个触发点就没了
                 ['shareToken', 'share_token'].forEach((k) => {
                     try { GM_deleteValue(k); localStorage.removeItem(k); } catch (e) {}
                 });
-                // Migrate first: if GM is empty, getStorage pulls the localStorage
-                // copy into GM. Then unconditionally scrub the page-accessible copy,
-                // even when GM already had a value (otherwise the old localStorage
-                // entry survives and the CWE-282 fix is incomplete).
+                                // 先做迁移：GM 存储为空就从 localStorage 拉过来一份；
+                                // 然后把 localStorage 那份无脑清掉——
+                                // 即使 GM 里已经有值也清，否则旧条目会残留，CWE-282 修补就不完整。
                 LEGACY_LOCAL_KEYS.forEach((k) => {
                     try { base.getStorage(k); } catch (e) {}
                     try { localStorage.removeItem(k); } catch (e) {}
@@ -235,8 +230,8 @@
             GM_setClipboard(text, 'text');
         },
         e(str) {
-                        // unescape is deprecated; TextEncoder is the modern equivalent
-                        // but btoa still needs a binary string, so use the surrogate-safe form.
+                                                // unescape 已被废弃，改用 TextEncoder；
+                                                // 但 btoa 还是要二进制字符串，所以走 surrogate-safe 的写法。
                         return btoa(Array.from(new TextEncoder().encode(str), c => String.fromCharCode(c)).join(''));
                     },
         getExtension(name) {
@@ -275,7 +270,7 @@
         fixFilename(name) {
             return String(name || '').replace(/[!?&|`"'*\/:<>\\$;(){}\n\r\x00-\x1F\x7F]/g, '_');
         },
-        // sanitize before a filename enters an aria2 RPC out/dir field. aria2
+                // 文件名进入 aria2 的 out/dir 字段前过一遍清洗，防止注入
         safeHttpUrl(url) {
             const u = String(url || '');
             if (!/^https?:\/\//i.test(u)) return '';
@@ -303,8 +298,8 @@
                 .replace(/^\.+/, '_')
                 .slice(0, 255);
         },
-        // shared by tianyi + yidong; they were defined only on yidong, so
-        // `base.getSign()` in tianyi was undefined and every tianyi download threw.
+                // 两个网盘共用这个 helper——原先只写在移动网盘那边，
+                // 天翼网盘调用 base.getSign() 就一直报未定义。
         getRandomString(len) {
             len = len || 16;
             let $chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678';
@@ -316,8 +311,8 @@
             return pwd;
         },
         getSign(e, t, a, n) {
-            // `i = ""` was an implicit global, which throws ReferenceError under the
-            // IIFE's 'use strict' - every yidong download died here. Declare it locally.
+                        // `i = ""` 是没写 var/let 的隐式全局变量，
+                        // 在 IIFE 的 strict 模式下抛 ReferenceError，移动网盘所有下载都会挂。改成局部变量声明。
             let i = "";
             if (t) {
                 let s = Object.assign({}, t);
@@ -348,8 +343,8 @@
                                 data = JSON.stringify(data);
                             }
                             return new Promise((resolve, reject) => {
-                                // tracked so _resetData() can abort it; an untracked request
-                                // holds its socket and starves every later one.
+                                                                // 把请求对象记录下来，方便后续 _resetData() 能主动 abort；
+                                                                // 没记的话 socket 就卡着不释放，后面的请求全被饿死。
                                 const key = 'post_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
                                 const clear = () => { delete request[key]; };
                                 request[key] = GM_xmlhttpRequest({
@@ -360,7 +355,7 @@
                                     onload: (res) => {
                                         clear();
                                         if (type === 'blob') { resolve(res); return; }
-                                        // a 4xx body is still "loaded", so resolving it
+                                                                                // 4xx 响应体是正常加载的（不是连接失败），所以这里 resolve 它
                                         if (res.status >= 400) {
                                             const body = res.response || res.responseText || '';
                                             let msg = 'HTTP ' + res.status;
@@ -383,8 +378,8 @@
         get(url, headers, type, extra) {
             headers = Object.assign({ 'Referer': location.origin }, headers);
             return new Promise((resolve, reject) => {
-                // track from the start, not in onloadstart - if the request
-                // errors before onloadstart fires, it's stuck and can't be aborted.
+                                // 从请求发出那一刻就跟踪，而不是 onloadstart——
+                                // 如果请求在 onloadstart 之前就报错，状态机就卡死了，abort 也收不到。
                 const key = 'get_' + (extra && extra.index != null ? extra.index : Date.now());
                 const clear = () => { delete request[key]; };
                 let requestObj = GM_xmlhttpRequest({
@@ -417,7 +412,7 @@
         getFinalUrl(url, headers) {
             headers = Object.assign({ 'Referer': location.origin }, headers);
             return new Promise((resolve, reject) => {
-                // a plain GET streamed the whole body (hundreds of MB) just to read
+                                // 纯 GET 会拉完整 body（几百 MB），拿文件大小没必要这么重
                 const key = 'finalurl_' + Date.now();
                 const done = (v) => { delete request[key]; resolve(v); };
                 request[key] = GM_xmlhttpRequest({
@@ -524,7 +519,7 @@
                 name: 'setting_theme_color',
                 value: '#09AAFF'
             }, {
-                // IDM's capture endpoint is a fixed local port (1001) with a client id.
+                                // IDM 的抓取端点是固定的本地端口 1001，通过 client id 识别不同实例
                 name: 'setting_idm_rpc',
                 value: [{
                     id: '1',
@@ -583,7 +578,7 @@
             doc.on('click', '.listener-color', async (e) => {
                 base.setValue('setting_theme_color', e.target.dataset.color);
                 message.success('设置成功！');
-                // No history.go(0) - theme change applies immediately via CSS update
+                                // 不用 history.go(0) 刷新，主题切换直接改 CSS 类，即时生效
             });
             doc.on('input', '.listener-domain', async (e) => {
                 base.setValue('setting_rpc_domain', e.target.value);
@@ -653,7 +648,7 @@
                 }
             });
 
-            // one registration covers all six adapters - every api row renders this
+                        // 一个注册覆盖全部六个适配器——每行 api 渲染都会用到
             doc.on('click', '.listener-idm', async (e) => {
                 e.preventDefault();
                 const btn = $(e.currentTarget);
@@ -662,17 +657,21 @@
                     message.error('提示：下载链接无效！');
                     return;
                 }
-                // guard against a second click while the first is still in flight -
+                                // 防止同一请求还没跑完就被重复点击触发第二次——
                 if (btn.attr('data-processing') === 'true') return;
                 btn.attr('data-processing', 'true');
                 const original = btn.html();
                 btn.addClass('is-loading').attr('title', '正在推送到 IDM…');
-                // from the current page), and those were fine for the other five pans. But
+                                // 这个判断依赖当前页面的类型，对剩下五家网盘的判断逻辑也适用，但迅雷特例需要额外校验。
                 let idmHeaders = {};
                 if (/d\.pcs\.baidu\.com/.test(href)) idmHeaders['User-Agent'] = 'pan.baidu.com';
                 if (/xunlei\.com/.test(href)) {
                     const xunleiCookie = xunlei && xunlei._getAuthCookie ? xunlei._getAuthCookie() : '';
                     if (xunleiCookie) idmHeaders['Cookie'] = xunleiCookie;
+                }
+                if (/quark\.cn/.test(href)) {
+                    idmHeaders['User-Agent'] = LOCAL_CONFIG.quark.ua;
+                    idmHeaders['Cookie'] = String(document.cookie);
                 }
                 const res = await base.sendLinkToIDM(href, btn.data('filename'), btn.data('filesize') || 0, idmHeaders);
                 btn.attr('data-processing', 'false');
@@ -700,10 +699,9 @@
             $div.append($iframe);
             $('body').append($div);
         },
-        // all six adapters download an api link the same way - hand the URL to the browser
-        // via a hidden iframe. whether a download manager extension intercepts the
-        // resulting navigation is that extension's call; there is no script-side way to
-        // prevent it. the IDM button exists for users who want that route.
+                // 六个网盘的 API 下载都走同一条路——把 URL 交给隐藏的 iframe，触发浏览器原生下载。
+                // 至于浏览器扩展（比如 IDM）会不会拦截这次导航，那是扩展自己的事，脚本控制不了。
+                // 所以还是留个 IDM 按钮，给想要走这条路的人用。
         iframeDownload(link) {
             if (!/^https?:\/\//i.test(link)) {
                 message.error('提示：下载链接无效！');
@@ -740,7 +738,7 @@
                                 <div class="pl-item-name">${filename}</div>
                                 <a class="pl-item-link" href="javascript:void(0)" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}">${base.esc(decodeURIComponent(alink))}</a>
                                 <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
-                                <button class="pl-item-btn pl-btn-primary listener-copy-aria" data-arialink="${alink}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制下载命令行</button>
+                                <button class="pl-item-btn pl-btn-primary listener-copy-aria" data-arialink="${alink}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制下载命令行</button><button class="pl-item-btn pl-btn-primary listener-link-rpc" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>推送至 Aria2</button>
                                 </div>`;
         },
         generateRpcRow(filename, dlink, size) {
@@ -754,7 +752,7 @@
                                 <div class="pl-item-name">${filename}</div>
                                 <a class="pl-item-link" href="javascript:void(0)" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}">${base.esc(decodeURIComponent(alink))}</a>
                                 <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
-                                <button class="pl-item-btn pl-btn-primary listener-copy-aria" data-arialink="${alink}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制下载命令行</button>
+                                <button class="pl-item-btn pl-btn-primary listener-copy-aria" data-arialink="${alink}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制下载命令行</button><button class="pl-item-btn pl-btn-primary listener-link-rpc" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>推送至 Aria2</button>
                                 </div>`;
         },
         generateBCRow(filename, dlink, alink, size, extra = '') {
@@ -767,7 +765,7 @@
                                 </div>`;
         },
 
-        // IDM's capture protocol, not an extension sniff. IDM listens on 127.0.0.1:1001
+                // IDM 用的是本地抓包协议，不是扩展嗅探。IDM 监听 127.0.0.1:1001，所以不需要跨域。
         standHeaders(headers = {}, addDefault = false) {
             if (!headers) return {};
             if (typeof headers === 'string') {
@@ -797,7 +795,7 @@
         async sendLinkToIDM(link, filename, filesize, headers = {}) {
             const list = base.getValue('setting_idm_rpc') || [];
             const rpc = list.find(i => i && i.default) || list[0] || { id: '1' };
-            // serialised through a promise chain. IDM answers one MSG at a time and
+                        // 串行化通过 Promise 链实现——IDM 一次只能处理一条 MSG。
             if (!this.sendLinkToIDM.lock) this.sendLinkToIDM.lock = Promise.resolve();
             return this.sendLinkToIDM.lock = this.sendLinkToIDM.lock.then(async () => {
                 headers = this.standHeaders(headers);
@@ -806,11 +804,9 @@
                 const time = Date.now();
                 const url = `http://127.0.0.1:1001/client/${encodeURIComponent(rpc.id)}?seq=${seq}`;
                 const ext = base.getExtension(filename);
-                // quirk 1: IDM's header parser is rigid - without the trailing newline it
-                // refuses to parse the block at all.
+                                // 坑 1：IDM 的头解析很死板——少了那个结尾换行，整个 block 直接拒绝解析。
                 const headersText = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n') + '\n';
-                // quirk 2: the length prefix is a BYTE count, so multi-byte filenames need
-                // Blob().size, not String.length (which counts UTF-16 units).
+                                // 坑 2：长度前缀是字节数，所以多字节文件名要用 Blob().size，不能用 String.length（算的是 UTF-16 单元数）。
                 const format = (key, val) => {
                     if (val === undefined || val === null) return '';
                     const str = String(val);
@@ -824,14 +820,14 @@
                     format(100, filename),
                     format(122, 4)
                 ];
-                // quirk 3: the envelope is undocumented. Read left to right:
+                                // 坑 3：信封格式没文档。从左往右读：
                 const data = `MSG#${seq}#13#1#10241:${seq + 1000}:0:${time}:0:1:2:${filesize || 0}:0,${fields.join(',')};`;
-                // bypass base.post - it rejects on res.status >= 400 and parses as
+                                // 绕开 base.post——它会拒 4xx 并当 JSON 解析；IDM 的响应是纯文本。
                 const raw = await new Promise((resolve) => {
                     GM_xmlhttpRequest({
                         method: "POST", url, data,
                         headers: { "Content-Type": "text/plain" },
-                        // withCredentials is required - LinkSwift's
+                                                // withCredentials 必须开——LinkSwift 就是这么做的，关掉就 403。
                         withCredentials: true,
                         timeout: 15000,
                         onload: (r) => resolve(r.responseText || r.response || ''),
@@ -840,7 +836,7 @@
                     });
                 });
                 const res = raw || false;
-                // replay and drops it without answering, so a failed send used to wedge the
+                                // IDM 收到重复请求会直接丢包不给响应，所以一次发送失败会导致整个请求卡住。
                 this.sendLinkToIDM.seq++;
                 if (res && String(res).endsWith('3;')) {
                     return 'success';
@@ -907,16 +903,20 @@
             button.pl-item-btn { background: ${color} !important; padding: 4px 8px !important; border-radius: 6px !important; line-height: 1 !important; cursor: pointer !important; color: #fff !important; border: 0 !important; height: 32px !important; box-sizing: border-box !important; display: inline-flex !important; align-items: center !important; justify-content: center !important; white-space: nowrap !important; transition: opacity 180ms ease !important; }
             button.pl-item-btn.pl-btn-primary.listener-link-copy,
             button.pl-item-btn.pl-btn-primary.listener-link-api-btn,
-            button.pl-item-btn.pl-btn-primary.listener-copy-aria { background: #fff !important; color: #111 !important; border: 1px solid #e6e8eb !important; }
+            button.pl-item-btn.pl-btn-primary.listener-copy-aria,
+            button.pl-item-btn.pl-btn-primary.listener-link-rpc { background: #fff !important; color: #111 !important; border: 1px solid #e6e8eb !important; }
             button.pl-item-btn.pl-btn-primary.listener-link-copy:hover,
             button.pl-item-btn.pl-btn-primary.listener-link-api-btn:hover,
-            button.pl-item-btn.pl-btn-primary.listener-copy-aria:hover { background: #f5f6f7 !important; opacity: 1 !important; }
+            button.pl-item-btn.pl-btn-primary.listener-copy-aria:hover,
+            button.pl-item-btn.pl-btn-primary.listener-link-rpc:hover { background: #f5f6f7 !important; opacity: 1 !important; }
             button.pl-item-btn.pl-btn-primary.listener-link-copy .pl-ico,
             button.pl-item-btn.pl-btn-primary.listener-link-api-btn .pl-ico,
-            button.pl-item-btn.pl-btn-primary.listener-copy-aria .pl-ico { stroke: #787774; }
+            button.pl-item-btn.pl-btn-primary.listener-copy-aria .pl-ico,
+            button.pl-item-btn.pl-btn-primary.listener-link-rpc .pl-ico { stroke: #787774; }
             button.pl-item-btn.pl-btn-primary.listener-link-copy:hover .pl-ico,
             button.pl-item-btn.pl-btn-primary.listener-link-api-btn:hover .pl-ico,
-            button.pl-item-btn.pl-btn-primary.listener-copy-aria:hover .pl-ico { stroke: #111; }
+            button.pl-item-btn.pl-btn-primary.listener-copy-aria:hover .pl-ico,
+            button.pl-item-btn.pl-btn-primary.listener-link-rpc:hover .pl-ico { stroke: #111; }
             button.pl-item-btn:hover { opacity: 0.9; }
             button.pl-item-btn:active { filter: brightness(.9); }
             button.pl-item-btn:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
@@ -1155,14 +1155,14 @@
                                 Swal.close();
                                 message.error('获取下载链接失败：' + (err && err.message || '未知错误'));
                             } finally {
-                                // covers every early-return path in getPCSLink, so a missed
+                                                                // getPCSLink 里所有提前返回的路径都覆盖了，漏掉任何一条都会让弹窗残留。
                                 if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close();
                             }
                         });
             doc.on('click', '.listener-link-api', (e) => {
                 e.preventDefault();
                 const link = e.currentTarget.dataset.link;
-                // baidu only: over 50MB a browser request gets nothing, so check the size.
+                                // 百度只有这种情况：大于 50MB 的浏览器直下请求拿不到内容，所以要提前查文件大小。
                 if (/d\.pcs\.baidu\.com/.test(link)) {
                     const size = +e.currentTarget.dataset.filesize || 0;
                     if (size > 50 * 1024 * 1024) {
@@ -1243,8 +1243,7 @@
                     }
                 }, 1000);
             });
-            // HEAD/ranged-GET can extract the token without a tab when the
-            // user has already authorised the app - Baidu 302s straight to login_success.
+                        // HEAD/ranged-GET 能从响应头拿到 token，不用新开标签——用户已授权时百度直接 302 到 login_success。
             try {
                 if (base.getFinalUrl) {
                     let res = await base.getFinalUrl(pan.pcs[3]);
@@ -1271,7 +1270,7 @@
                 }
             } catch (e) {
             }
-            // GM_openInTab: iframe can't click authorise (no @match on oauth page)
+                        // GM_openInTab 的场景：iframe 点不了授权按钮（@match 没覆盖 oauth 页面）。
             base.deleteValue('baidu_access_token');
             GM_openInTab(pan.pcs[3], {active: false, insert: true, setParent: true});
             let token = await waitForToken(60);
@@ -1344,9 +1343,8 @@
             if (res.errno === 0) {
                 let files = (res.list || []).filter(v => +v.isdir !== 1);
                 if (!files.length) {
-                    // only retry with a fresh token when the selection actually had files -
-                    // an all-folder selection returns an empty list too, and deleting the
-                    // token here would force a pointless OAuth popup on the next click.
+                                        // 只有勾选里有真正文件时才刷新 token——
+                                        // 全文件夹的勾选也会返回空列表，这时候删 token 会让下次点击多弹一次 OAuth 框。
                     if (fidList !== encodeURIComponent('[]') && maxRequestTime >= 1) {
                         base.deleteValue('baidu_access_token');
                         base.deleteValue('baidu_access_token_bduss');
@@ -1443,18 +1441,18 @@
                 params: [`token:${rpc.token}`, [link], {
                     dir: rpc.dir,
                     out: base.safeRpcFilename(filename),
-                    header: [`User-Agent: ${pan.ua}`, ...(BDUSS ? [`Cookie: BDUSS=${BDUSS}`] : [])]
+                    header: [`User-Agent: ${pan.ua}`, ...(BDUSS ? [`Cookie: BDUSS=${BDUSS}`] : [])],
                 }]
             };
             try {
                 let res = await base.post(url, rpcData, {"User-Agent": pan.ua}, '');
                 if (res.result) return 'success';
-                // aria2 answered but refused - surface its own message so the user
+                                // aria2 收到了请求但拒绝了（token/path 不对），把它的原始错误吐给用户而不是笼统的「失败」。
                 // can tell a bad token from a bad dir instead of a generic "失败".
                 message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                // a throw here is almost always "nothing is listening on that port".
+                                // 走到这里几乎都是「端口没开」的情况——aria2 根本没响应。
                 message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
@@ -1517,8 +1515,8 @@
     let ali = {
         convertLinkToAria(link, filename, ua) {
                     filename = base.fixFilename(filename);
-                    // ali's CDN 403s without a browser User-Agent, so aria2 needs the header
-                    // too - otherwise the generated command fails where the in-script download now works.
+                                        // 阿里的 CDN 没浏览器 UA 就直接 403，aria2c 命令也得带 header——
+                                        // 不然生成的命令在用户终端里跑不起来，但脚本内部下载是正常的。
                     return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 16 -s 16 -k 1M --header "Referer: https://www.aliyundrive.com/" --header "User-Agent: ${ua || navigator.userAgent}"`);
                 },
         convertLinkToBC(link, filename, ua) {
@@ -1528,7 +1526,7 @@
         convertLinkToCurl(link, filename, ua) {
             let terminal = base.getValue('setting_terminal_type');
             filename = base.fixFilename(filename);
-            // -A is curl's User-Agent flag; ali's CDN 403s without it.
+                        // -A 是 curl 的 UA 参数；阿里 CDN 没它直接 403。
             return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}" -e "https://www.aliyundrive.com/" -A "${ua || navigator.userAgent}"`);
         },
         addPageListener() {
@@ -1603,8 +1601,8 @@
             let $toolWrap;
             let $button = $(`<div class="ali-button pl-button"><svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" width="16" height="16"><path d="M853.333 938.667H170.667a85.333 85.333 0 0 1-85.334-85.334v-384A85.333 85.333 0 0 1 170.667 384H288a32 32 0 0 1 0 64H170.667a21.333 21.333 0 0 0-21.334 21.333v384a21.333 21.333 0 0 0 21.334 21.334h682.666a21.333 21.333 0 0 0 21.334-21.334v-384A21.333 21.333 0 0 0 853.333 448H736a32 32 0 0 1 0-64h117.333a85.333 85.333 0 0 1 85.334 85.333v384a85.333 85.333 0 0 1-85.334 85.334z" fill="#fff"/><path d="M715.03 543.552a32.81 32.81 0 0 0-46.251 0L554.005 657.813v-540.48a32 32 0 0 0-64 0v539.734L375.893 543.488a32.79 32.79 0 0 0-46.229 0 32.427 32.427 0 0 0 0 46.037l169.557 168.811a32.81 32.81 0 0 0 46.251 0l169.557-168.81a32.47 32.47 0 0 0 0-45.974z" fill="#FF9C00"/></svg><span>下载助手</span><ul class="pl-dropdown-menu"><li class="pl-dropdown-menu-item pl-button-mode" data-mode="api">API下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="aria" >Aria下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="rpc">RPC下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="curl">cURL下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="bc" >BC下载</li><li class="pl-dropdown-menu-item listener-open-setting">助手设置</li></ul></div>`);
             if (pt === 'home') {
-                // CSS module class prefixes change between alipan builds.
-                // Try the config selector first, then fall back to broader patterns.
+                                // CSS module 类名前缀随阿里页面改版会变。
+                                // 先用配置里的精准选择器，找不到再回退到宽松模式。
                 const fallbacks = [
                     pan.btn.home,
                     '[class*="header--"] [class*="actions--"]',
@@ -1655,7 +1653,7 @@
                         if (res && res.url) selectList[i].downloadUrl = res.url;
                     });
                 } catch (e) {
-                    // base.post now rejects on 4xx with the server's own message, so an
+                                        // base.post 现在对 4xx 会抛出服务端原始错误信息，不再笼统报「请求失败」。
                     Swal.close();
                     const m = (e && e.message) || '';
                     if (/AccessTokenInvalid|token/i.test(m)) {
@@ -1736,7 +1734,7 @@
                 return 'fail';
             }
             let url = `${rpc.domain}:${rpc.port}${rpc.path}`;
-                        // ali's CDN 403s any request without a browser User-Agent - it reads as bot
+                                                // 阿里 CDN 看到非浏览器 UA 就 403，把它当成爬虫处理。
                         const UA = navigator.userAgent;
                         let rpcData = {
                             id: new Date().getTime(),
@@ -1764,7 +1762,7 @@
                 let selectedList = [];
                 let tableDom = document.querySelector(pan.dom.list);
                 if (tableDom) {
-                    // table view: selection lives in props.selectedKeys
+                                        // 表格视图里选中项挂在 props.selectedKeys 上。
                     let reactObj = base.findReact(tableDom, 1);
                     if (reactObj) {
                         let props = reactObj.pendingProps;
@@ -1781,10 +1779,10 @@
                     return selectedList;
                 }
 
-                // grid view (the only view alipan ships now) has no selectedKeys
+                                // 网格视图（阿里现在默认渲染的视图）没有 selectedKeys，走 dataSource。
                 let gridDom = document.querySelector(pan.dom.grid);
                 if (!gridDom) return [];
-                // traverseUp must stay 0 here. CDP-verified on alipan 6.8.12 -
+                // 阿里网格视图的 React 树不需要往上找
                 let gridReact = base.findReact(gridDom, 0);
                 if (!gridReact) return [];
                 let dataSource = (gridReact.pendingProps || {}).dataSource || [];
@@ -1894,7 +1892,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
                                 let container = document.querySelector(pan.btn.home);
                                 if (container && $('.pl-button').length === 0) {
                                     this._insertBeforeUpload(container, $button);
-                                    // Sync button width to dropdown menu width
+                                                                        // 把下拉菜单按钮宽度对齐到下拉菜单本身。
                                     setTimeout(() => {
                                         const menu = $button.find('.pl-dropdown-menu');
                                         if (menu.length) {
@@ -2516,11 +2514,11 @@ base.iframeDownload(e.currentTarget.dataset.link);
     let quark = {
         convertLinkToAria(link, filename, ua) {
             filename = base.fixFilename(filename);
-            return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 16 -s 16 -k 1M --header "Cookie: ${base.getCookie('__pus') || base.getCookie('__puus') || ''}"`);
+            return encodeURIComponent(`aria2c "${link}" --out "${filename}" --header "User-Agent: ${pan.ua}" --header "Cookie: ${String(document.cookie).replace(/[\\"`$]/g, '')}"`);
         },
         convertLinkToBC(link, filename, ua) {
-            // same as convertLinkToCurl - scope the cookie to what quark's CDN needs
-            // instead of dumping the entire jar into a shareable link.
+                        // 跟 convertLinkToCurl 一样的思路——cookie 只 scope 到夸克 CDN 需要的部分，
+                        // 别把整个 jar 一股脑塞进可分享的链接里。
             const ck = base.getCookie('__pus') || base.getCookie('__puus') || '';
             let bc = `AA/${encodeURIComponent(filename)}/?url=${encodeURIComponent(link)}&cookie=${encodeURIComponent(ck)}ZZ`;
             return encodeURIComponent(`bc://http/${base.e(bc)}`);
@@ -2528,10 +2526,8 @@ base.iframeDownload(e.currentTarget.dataset.link);
         convertLinkToCurl(link, filename, ua) {
             let terminal = base.getValue('setting_terminal_type');
             filename = base.fixFilename(filename);
-            // this used to inline the whole document.cookie, dumping every session
-            const ck = base.getCookie('__pus') || base.getCookie('__puus') || '';
-            const cookie = ck ? ` -b "${ck}"` : '';
-            return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}"${cookie}`);
+                        // 之前这段代码会把整个 document.cookie 内联到命令行里，相当于泄露了所有会话。
+            return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}" -A "${pan.ua}" -b "${String(document.cookie).replace(/[\\"`$]/g, '')}"`);
         },
         addPageListener() {
             if (this._listenerBound) return;
@@ -2592,9 +2588,8 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 });
             }
         },
-        // quark hands out a per-session accel token; without it the CDN serves the
-        // download from a throttled node (~30KB/s). fetching the real link with this
-        // token in the body gets the fast node instead.
+                // 夸克给每个会话发一个加速 token；没它 CDN 就派到限速节点（~30KB/s）。
+                // 请求体里带上这个 token，CDN 就把下载路由到高速节点了。
         async getAccelToken() {
             const now = Date.now();
             const cached = base.getValue('quark_accel_token');
@@ -2760,7 +2755,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
             }
         },
         detectPage() {
-            // CDP-verified: live href is /list#/list/all, so location.pathname already
+            // 页面是 hash 路由，pathname 就能区分
             let path = location.pathname;
             if (/^\/(list)/.test(path)) return 'home';
             return '';
