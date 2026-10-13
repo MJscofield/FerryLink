@@ -41,6 +41,7 @@
 // @connect           caiyun.139.com
 // @connect           localhost
 // @connect           127.0.0.1
+// @connect           *
 // @grant             GM_xmlhttpRequest
 // @grant             GM_setClipboard
 // @grant             GM_setValue
@@ -289,8 +290,10 @@
                 host = new URL(d.includes('://') ? d : 'http://' + d).hostname;
             } catch (e) { return false; }
             if (host === 'localhost' || host === '::1') return true;
-            return /^(127\.|10\.|192\.168\.|169\.254\.)/.test(host)
-                || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(host);
+            return /^((127|10)\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3})$/.test(host)
+                || /^172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)
+                // Tailscale 的虚拟网段是 100.64.0.0/10
+                || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(host);
         },
         safeRpcFilename(name) {
             return String(name || '')
@@ -1452,7 +1455,7 @@
                 return 'fail';
             } catch (e) {
                 // a throw here is almost always "nothing is listening on that port".
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '），请确认下载器已启动且 RPC 服务已开启');
+                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
@@ -1742,17 +1745,17 @@
                             params: [`token:${rpc.token}`, [link], {
                                 dir: rpc.dir,
                                 out: base.safeRpcFilename(filename),
-                                header: [`Referer: https://www.aliyundrive.com/`, `User-Agent: ${UA}`]
+                                header: [`Referer: ${location.origin}/`, `Origin: ${location.origin}`, `User-Agent: ${UA}`]
                             }]
                         };
                         try {
-                            let res = await base.post(url, rpcData, {"Referer": "https://www.aliyundrive.com/"}, '');
+                            let res = await base.post(url, rpcData, {}, '');
                 if (res.result) return 'success';
                 // can tell a bad token from a bad dir instead of a generic "失败".
                 message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '），请确认下载器已启动且 RPC 服务已开启');
+                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
@@ -2052,7 +2055,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '），请确认下载器已启动且 RPC 服务已开启');
+                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
@@ -2428,7 +2431,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '），请确认下载器已启动且 RPC 服务已开启');
+                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
@@ -2719,7 +2722,9 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 params: [`token:${rpc.token}`, [link], {
                     dir: rpc.dir,
                     out: base.safeRpcFilename(filename),
-                    header: [`Cookie: ${base.getCookie('__pus') || base.getCookie('__puus') || ''}`]
+                    header: [`User-Agent: ${pan.ua}`, `Cookie: ${String(document.cookie)}`],
+                    'user-agent': pan.ua,
+                    'referer': `${location.origin}/`
                 }]
             };
             try {
@@ -2729,7 +2734,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '），请确认下载器已启动且 RPC 服务已开启');
+                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
@@ -3010,7 +3015,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '），请确认下载器已启动且 RPC 服务已开启');
+                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
