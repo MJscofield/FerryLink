@@ -22,9 +22,9 @@
 
 **👉 一个免费开源的网盘下载助手 👈**
 
-【FerryLink】是一款免费开源 **获取网盘文件真实下载地址** 的油猴脚本，支持 Windows、Mac、Linux 多平台，兼容 IDM、XDown、Aria2、NDM、Motrix、终端等下载器，支持 HTTP、Aria2、JSON-RPC、cURL、BC 多种下载协议。
+【FerryLink】是一款免费开源 **获取网盘文件真实下载地址** 的油猴脚本，支持 Windows、Mac、Linux 多平台，兼容 IDM、XDown、Aria2、NDM、Motrix、终端等下载器，支持 HTTP、JSON-RPC、cURL 多种下载协议。
 
-> ⚠️ **建议配合网盘会员使用** — 本助手仅解析下载链接，不突破网盘限速
+> ⚠️ **建议配合网盘超级会员使用** — 本助手仅解析下载链接，不突破网盘限速
 
 ---
 
@@ -33,7 +33,7 @@
 | 特性 | 说明 |
 |------|------|
 | 🎯 **六大网盘支持** | 百度网盘、阿里云盘、天翼云盘、迅雷云盘、夸克网盘、中国移动云盘 |
-| ⚡ **多种下载协议** | HTTP 直链下载、Aria2 下载、JSON-RPC 远程下载、cURL 命令下载、BC 下载 |
+| ⚡ **多种下载协议** | HTTP 直链下载、Aria2 下载、JSON-RPC 远程下载、cURL 命令下载 |
 | 🔧 **兼容主流下载器** | IDM、XDown、Aria2、NDM、Motrix、浏览器自带下载 |
 | 🔒 **配置内嵌本地** | 所有配置已内嵌脚本，不依赖第三方远程服务器 |
 | 🎨 **自定义主题** | 支持更换主题颜色，7种预设可选 |
@@ -84,15 +84,21 @@
 1. 打开 [网盘直链下载助手.user.js](https://raw.githubusercontent.com/Wjavan/FerryLink/main/网盘直链下载助手.user.js)
 2. Tampermonkey 会提示安装，点击 **安装** 即可
 
-**方法二：国内镜像安装（GitHub 访问慢时用）**
+**方法二：从 GreasyFork 安装**
 
-1. 点击 [FerryLink](https://cdn.jsdelivr.net/gh/Wjavan/FerryLink@main/%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B.user.js)
+1. 访问 [GreasyFork 页面](https://greasyfork.org/zh-CN/scripts/595544-%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B)
+2. 点击 **安装**
+
+**方法三：从 ScriptCat 安装**
+
+1. 访问 [ScriptCat 页面](https://scriptcat.org/zh-CN/script-show-page/8398)
+2. 点击 **安装**
+
+**方法四：国内镜像安装（GitHub 访问慢时用）**
+
+1. 打开 [网盘直链下载助手.user.js（jsDelivr 镜像）](https://cdn.jsdelivr.net/gh/Wjavan/FerryLink@main/%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B.user.js)
 2. Tampermonkey 会提示安装，点击 **安装** 即可
 > 注意：镜像可能有缓存延迟，更新不及时时请用方法一
-
-**方法三：从 GreasyFork 安装**
-
-访问 [GreasyFork 页面](https://greasyfork.org/zh-CN/scripts/595544-%E7%BD%91%E7%9B%98%E7%9B%B4%E9%93%BE%E4%B8%8B%E8%BD%BD%E5%8A%A9%E6%89%8B) 点击 **安装**
 
 ---
 
@@ -135,6 +141,7 @@
 | 链接 | 地址 |
 |------|------|
 | 📦 GreasyFork 安装页 | [greasyfork.org/zh-CN/scripts/595544](https://greasyfork.org/zh-CN/scripts/595544) |
+| 🐱 ScriptCat 安装页 | [scriptcat.org/zh-CN/script-show-page/8398](https://scriptcat.org/zh-CN/script-show-page/8398) |
 | 🌐 项目主页 | [github.com/Wjavan/FerryLink](https://github.com/Wjavan/FerryLink) |
 | 🐛 提交 Issue | [github.com/Wjavan/FerryLink/issues](https://github.com/Wjavan/FerryLink/issues) |
 | 🍴 查看 Forks | [github.com/Wjavan/FerryLink/forks](https://github.com/Wjavan/FerryLink/forks) |
