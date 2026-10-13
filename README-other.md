@@ -73,8 +73,8 @@
 
 | 链接 | 地址 |
 | --- | --- |
-| [GitHub 仓库](https://github.com/Wjavan/FerryLink) | 源码 & Issue 反馈 |
-| [GreasyFork](https://greasyfork.org/zh-CN/scripts/595544) | 在线安装 |
+| [GitHub 仓库](https://github.com/Wjavan/FerryLink) | 主仓库|
+| [GreasyFork](https://greasyfork.org/zh-CN/scripts/595544) | GreasyFork安装 |
 | [ScriptCat](https://scriptcat.org/zh-CN/script-show-page/8398) | ScriptCat 安装 |
 
 ---
