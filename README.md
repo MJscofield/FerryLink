@@ -14,8 +14,8 @@
    <img alt="支持平台" src="https://img.shields.io/badge/%E6%94%AF%E6%8C%81%E5%B9%B3%E5%8F%B0-Windows_%7C_Mac_%7C_Linux-blueviolet?style=flat&logo=linux&logoColor=white&labelColor=black">
    <br/>
    <img alt="Chrome" src="https://img.shields.io/badge/Google%20Chrome-120%2B-yellow?style=flat&logo=googlechrome&logoColor=white&labelColor=black">
-   <img alt="Edge" src="https://img.shields.io/badge/Microsoft%20Edge-79%2B-blue?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzcuOCAyIDQuMyA0LjYgMy4xIDguNCA1LjQgNi41IDguMSA1LjUgMTEgNS41YzQuNCAwIDggMi45IDggNyAwIDEuOC0uNyAzLjUtMS45IDQuOCAyLjctMS42IDQuNC00LjUgNC40LTcuOEMyMS41IDUuNyAxNy4zIDIgMTIgMnpNMyAxMi41YzAgNC43IDMuOSA4LjUgOSA4LjUgMi4yIDAgNC4yLS44IDUuOC0yLjEtMS45LjYtMy45LjQtNS42LS42LTIuNi0xLjUtMy45LTQuMi0zLjYtNyAxLjUgMS4yIDIuNSAzIDIuNSA1LjEtLjctLjktMS4xLTItMS4xLTMuMnYtLjd6Ii8%2BPC9zdmc%2B&labelColor=black">
-   <img alt="Firefox" src="https://img.shields.io/badge/Mozilla%20Firefox-78%2B-orange?style=flat&logo=firefox&logoColor=white&labelColor=black">
+   <img alt="Edge" src="https://img.shields.io/badge/Microsoft%20Edge-120%2B-blue?style=flat&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzcuOCAyIDQuMyA0LjYgMy4xIDguNCA1LjQgNi41IDguMSA1LjUgMTEgNS41YzQuNCAwIDggMi45IDggNyAwIDEuOC0uNyAzLjUtMS45IDQuOCAyLjctMS42IDQuNC00LjUgNC40LTcuOEMyMS41IDUuNyAxNy4zIDIgMTIgMnpNMyAxMi41YzAgNC43IDMuOSA4LjUgOSA4LjUgMi4yIDAgNC4yLS44IDUuOC0yLjEtMS45LjYtMy45LjQtNS42LS42LTIuNi0xLjUtMy45LTQuMi0zLjYtNyAxLjUgMS4yIDIuNSAzIDIuNSA1LjEtLjctLjktMS4xLTItMS4xLTMuMnYtLjd6Ii8%2BPC9zdmc%2B&labelColor=black">
+   <img alt="Firefox" src="https://img.shields.io/badge/Mozilla%20Firefox-91%2B-orange?style=flat&logo=firefox&logoColor=white&labelColor=black">
 </p>
 
 ---
