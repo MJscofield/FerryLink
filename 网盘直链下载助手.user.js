@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              FerryLink
 // @namespace         https://github.com/Wjavan/FerryLink
-// @version           1.2.5
+// @version           1.3.0
 // @author            Wjavan
 // @description       支持百度/阿里/天翼/迅雷/夸克/移动六大网盘直链下载。支持 HTTP/JSON-RPC/cURL，推送至 IDM/XDown/Aria2/NDM/Motrix/终端。基于油小猴(youxiaohou.com)的网盘直链下载助手修改。
 // @copyright         2026, Wjavan (https://github.com/Wjavan)
@@ -67,19 +67,76 @@
         }));
         return;
     }
-    let pt = '', selectList = [], params = {}, mode = '', width = 800, pan = {}, color = '',
-        doc = $(document), progress = {}, request = {}, ins = {};
+    let pageNum = '', selectedFiles = [], panInfo = {}, color = '',
+        doc = $(document), downloadProgress = {}, pendingRequests = {}, intervals = {};
+
+    // ---- L3 UI 层 state ----
+    // 行内结果记号：所有下载器的结果都走这两个常量，别在调用点手写「✓」（改样式只改这里）
+    const MARK_OK = '<span class="pl-mark ok">✓</span>';
+    const MARK_NO = '<span class="pl-mark no">✗</span>';
+    // 下载面板状态：downloader/protocol 随弹窗开关重置
+    let downloadState = { downloader: '', protocol: '' };
+
+    // ---- 路由表：下载器对应哪个协议（全库唯一一张分派表）----
+    const DOWNLOADERS = [
+        { id: 'browser',  name: '浏览器'   },
+        { id: 'idm',      name: 'IDM'      },
+        { id: 'aria2',    name: 'Aria2'    },
+        { id: 'motrix',   name: 'Motrix'   },
+        { id: 'xdown',    name: 'XDown'    },
+        { id: 'bitcomet', name: 'BitComet' },
+        { id: 'term',     name: '终端'     },
+    ];
+
+    // 每个协议的 act（行为类型）：nav=隐藏 iframe 导航 / push=本地推送 / copy=复制
+    // 协议显示名按标准网络协议命名（id 为内部分派键，与执行器绑定，不允许改动）：
+    //   http   HTTP 直链       浏览器/XDown 直接 GET 直链
+    //   idm    本地 HTTP API   IDM 内置捕获接口 127.0.0.1:1001
+    //   rpc    JSON-RPC        aria2/Motrix RPC 接口（HTTP 6800 端口）
+    //   curl   curl            命令行 HTTP 客户端
+    //   aria2c aria2c          命令行下载器（HTTP/FTP/磁力）
+    //   bc     bc:// 协议      自定义 URI 协议
+    const PROTOCOLS = {
+        browser:  [{ id: 'http',   name: 'HTTP 直链',     group: 'http', act: 'nav'  }],
+        idm:      [{ id: 'idm',    name: '本地 HTTP API', group: 'http', act: 'push' }],
+        aria2:    [{ id: 'aria2c', name: 'Aria2c',         group: 'cli',  act: 'copy' },
+                   { id: 'rpc',    name: 'JSON-RPC',      group: 'http', act: 'push' }],
+        motrix:   [{ id: 'aria2c', name: 'Aria2c',         group: 'cli',  act: 'copy' },
+                   { id: 'rpc',    name: 'JSON-RPC',      group: 'http', act: 'push' }],
+        xdown:    [{ id: 'http',   name: 'HTTP 直链',     group: 'http', act: 'copy', btn: '复制命令' }],
+        bitcomet: [{ id: 'bc',     name: 'BC',           group: 'uri',  act: 'copy', btn: '复制命令' },
+                   { id: 'bc-rpc', name: 'BC-RPC',       group: 'http', act: 'push' }],
+        term:     [{ id: 'curl',   name: 'cURL',          group: 'cli',  act: 'copy' },
+                   { id: 'aria2c', name: 'Aria2c',        group: 'cli',  act: 'copy' }],
+    };
+
+    // 协议族划分：未选择下载器时按此分组展示全部协议
+    const PROTO_GROUPS = [
+        { id: 'http', label: 'HTTP 家族' },
+        { id: 'cli',  label: '命令行 HTTP 客户端' },
+        { id: 'uri',  label: '自定义 URI 协议' },
+    ];
+    // 协议说明（协议 chip 的 title 提示）
+    const PROTO_TITLES = {
+        http:   '浏览器直接请求直链下载',
+        idm:    '通过 IDM 本地 HTTP 接口（127.0.0.1:1001）推送任务，需 IDM 已启动且浏览器扩展已注册 client',
+        rpc:    '通过 Aria2/Motrix 的 JSON-RPC 接口（HTTP 6800 端口）推送任务，需已开启 RPC',
+        curl:   '生成 curl 命令行，适合 Linux/macOS 终端',
+        aria2c: '生成 aria2c 命令行，适合终端或脚本',
+        bc:     '复制 bc:// 地址：粘贴到 BitComet「文件→打开 URL」或地址栏即可调起客户端下载；无需配置端口，需本机已安装 BitComet',
+        'bc-rpc': '点击开始下载后先探测 BitComet 远程下载：可用则直接推送（无浏览器弹框）；不可用则自动改用 bc:// 调起本机 BitComet 客户端',
+    };
+    // 全部协议总目录：由 PROTOCOLS 按协议族去重派生，保证与分派表同源
+    const PROTO_ORDER = ['http', 'idm', 'rpc', 'curl', 'aria2c', 'bc', 'bc-rpc'];
+    const ALL_PROTOCOLS = PROTO_GROUPS.map(g => {
+        const seen = {};
+        Object.keys(PROTOCOLS).forEach(dl => PROTOCOLS[dl].forEach(p => {
+            if (p.group === g.id && !seen[p.id]) seen[p.id] = p;
+        }));
+        return { label: g.label, items: PROTO_ORDER.filter(id => seen[id]).map(id => seen[id]) };
+    });
 
     let watched = {};
-    const customClass = {
-        popup: 'pl-popup',
-        header: 'pl-header',
-        title: 'pl-title',
-        closeButton: 'pl-close',
-        content: 'pl-content',
-        input: 'pl-input',
-        footer: 'pl-footer'
-    };
     const terminalType = {
         wc: "Windows CMD",
         wp: "Windows PowerShell",
@@ -119,6 +176,7 @@
                 // getStorage/migrate 在首次遇到时会把它们迁入沙箱 GM 存储，
                 // 之后就只读 GM 版，页面再也碰不到这些敏感数据。
     const LEGACY_LOCAL_KEYS = ['baiduyunPlugin_BDUSS', 'accessToken'];
+    // ---- L2 领域层 ----
     let base = {
         getCookie(name) {
             let cname = name + "=";
@@ -209,10 +267,10 @@
                 // 重试逻辑把错误包起来；失败不代表崩了，下次加载再试就行
         migrate() {
             const MARK = 'ferrylink_migrated_version';
-            const VERSION = '1.2.5';
+            const VERSION = '1.3.0';
             try {
                 if (GM_getValue(MARK, '') === VERSION) return;
-                                // 分享页功能下掉后，这条注释对应的那个触发点就没了
+                                // 分享页功能已下线，这两个键是它留下的，顺手清掉免得一直躺在存储里
                 ['shareToken', 'share_token'].forEach((k) => {
                     try { GM_deleteValue(k); localStorage.removeItem(k); } catch (e) {}
                 });
@@ -252,16 +310,7 @@
             }
             return '';
         },
-        sortByName(arr) {
-            const handle = () => {
-                return (a, b) => {
-                    const p1 = a.filename ? a.filename : a.server_filename;
-                    const p2 = b.filename ? b.filename : b.server_filename;
-                    return p1.localeCompare(p2, "zh-CN");
-                };
-            };
-            arr.sort(handle());
-        },
+
         esc(str) {
             return String(str ?? '').replace(/[&<>"']/g, c => ({
                 '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -269,12 +318,6 @@
         },
         fixFilename(name) {
             return String(name || '').replace(/[!?&|`"'*\/:<>\\$;(){}\n\r\x00-\x1F\x7F]/g, '_');
-        },
-                // 文件名进入 aria2 的 out/dir 字段前过一遍清洗，防止注入
-        safeHttpUrl(url) {
-            const u = String(url || '');
-            if (!/^https?:\/\//i.test(u)) return '';
-            return this.esc(u);
         },
         validRpcDomain(domain) {
             const d = String(domain || '').trim();
@@ -290,6 +333,22 @@
                 // Tailscale 的虚拟网段是 100.64.0.0/10
                 || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(host);
         },
+        // 六家网盘的 RPC 推送都先干这三件事：取配置、校验主机、拼 url。主机不合法就提示并返回 null。
+        _rpcConfig() {
+            const rpc = {
+                domain: base.getValue('setting_rpc_domain'),
+                port: base.getValue('setting_rpc_port'),
+                path: base.getValue('setting_rpc_path'),
+                token: base.getValue('setting_rpc_token'),
+                dir: base.getValue('setting_rpc_dir'),
+            };
+            if (!base.validRpcDomain(rpc.domain)) {
+                base.panelNotice('RPC主机无效，仅允许本机或内网地址（如 http://127.0.0.1）', 'error');
+                return null;
+            }
+            rpc.url = `${rpc.domain}:${rpc.port}${rpc.path}`;
+            return rpc;
+        },
         safeRpcFilename(name) {
             return String(name || '')
                 .replace(/[\x00-\x1F\x7F]/g, '')
@@ -298,8 +357,7 @@
                 .replace(/^\.+/, '_')
                 .slice(0, 255);
         },
-                // 两个网盘共用这个 helper——原先只写在移动网盘那边，
-                // 天翼网盘调用 base.getSign() 就一直报未定义。
+                // 天翼和移动云盘都在调这个签名 helper，只放一份（分开写必然漂移）
         getRandomString(len) {
             len = len || 16;
             let $chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678';
@@ -311,8 +369,7 @@
             return pwd;
         },
         getSign(e, t, a, n) {
-                        // `i = ""` 是没写 var/let 的隐式全局变量，
-                        // 在 IIFE 的 strict 模式下抛 ReferenceError，移动网盘所有下载都会挂。改成局部变量声明。
+                        // i 得显式声明（let/var）：IIFE 的 strict 模式下隐式全局直接抛 ReferenceError，移动云盘所有下载都会挂
             let i = "";
             if (t) {
                 let s = Object.assign({}, t);
@@ -328,15 +385,15 @@
             return md5(A + l).toUpperCase();
         },
         _resetData() {
-                    progress = {};
-                    $.each(request, (key) => {
-                        (request[key]).abort();
+                    downloadProgress = {};
+                    $.each(pendingRequests, (key) => {
+                        (pendingRequests[key]).abort();
                     });
-                    $.each(ins, (key) => {
-                        clearInterval(ins[key]);
+                    $.each(intervals, (key) => {
+                        clearInterval(intervals[key]);
                     });
-                    ins = {};
-                    request = {};
+                    intervals = {};
+                    pendingRequests = {};
                 },
         post(url, data, headers, type) {
                             if (this.isType(data) === 'object') {
@@ -346,8 +403,8 @@
                                                                 // 把请求对象记录下来，方便后续 _resetData() 能主动 abort；
                                                                 // 没记的话 socket 就卡着不释放，后面的请求全被饿死。
                                 const key = 'post_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-                                const clear = () => { delete request[key]; };
-                                request[key] = GM_xmlhttpRequest({
+                                const clear = () => { delete pendingRequests[key]; };
+                                pendingRequests[key] = GM_xmlhttpRequest({
                                     method: "POST", url, headers, data,
                                     responseType: type || 'json',
                                     timeout: 30000,
@@ -381,7 +438,7 @@
                                 // 从请求发出那一刻就跟踪，而不是 onloadstart——
                                 // 如果请求在 onloadstart 之前就报错，状态机就卡死了，abort 也收不到。
                 const key = 'get_' + (extra && extra.index != null ? extra.index : Date.now());
-                const clear = () => { delete request[key]; };
+                const clear = () => { delete pendingRequests[key]; };
                 let requestObj = GM_xmlhttpRequest({
                     method: "GET", url, headers,
                     responseType: type || 'json',
@@ -393,12 +450,12 @@
                     },
                     onprogress: (res) => {
                         if (extra && extra.filename && extra.index != null) {
-                            res.total > 0 ? progress[extra.index] = Math.floor(res.loaded * 100 / res.total) : progress[extra.index] = 0;
+                            res.total > 0 ? downloadProgress[extra.index] = Math.floor(res.loaded * 100 / res.total) : downloadProgress[extra.index] = 0;
                         }
                     },
                     onloadstart() {
                         if (extra && extra.filename && extra.index != null) {
-                            progress[extra.index] = 0;
+                            downloadProgress[extra.index] = 0;
                         }
                     },
                     onerror: (err) => {
@@ -406,7 +463,7 @@
                         reject(err);
                     },
                 });
-                request[key] = requestObj;
+                pendingRequests[key] = requestObj;
             });
         },
         getFinalUrl(url, headers) {
@@ -414,21 +471,21 @@
             return new Promise((resolve, reject) => {
                                 // 纯 GET 会拉完整 body（几百 MB），拿文件大小没必要这么重
                 const key = 'finalurl_' + Date.now();
-                const done = (v) => { delete request[key]; resolve(v); };
-                request[key] = GM_xmlhttpRequest({
+                const done = (v) => { delete pendingRequests[key]; resolve(v); };
+                pendingRequests[key] = GM_xmlhttpRequest({
                     method: "HEAD", url, headers,
                     timeout: 10000,
-                    ontimeout: () => { delete request[key]; reject(new Error('请求超时（10s）')); },
+                    ontimeout: () => { delete pendingRequests[key]; reject(new Error('请求超时（10s）')); },
                     onload: (res) => { done(res.finalUrl || url); },
                     onerror: () => {
-                        delete request[key];
-                        request[key] = GM_xmlhttpRequest({
+                        delete pendingRequests[key];
+                        pendingRequests[key] = GM_xmlhttpRequest({
                             method: "GET", url,
                             headers: Object.assign({}, headers, { 'Range': 'bytes=0-0' }),
                             timeout: 10000,
-                            ontimeout: () => { delete request[key]; reject(new Error('请求超时（10s）')); },
+                            ontimeout: () => { delete pendingRequests[key]; reject(new Error('请求超时（10s）')); },
                             onload: (res) => { done(res.finalUrl || url); },
-                            onerror: () => { delete request[key]; resolve(url); }
+                            onerror: () => { delete pendingRequests[key]; resolve(url); }
                         });
                     }
                 });
@@ -495,90 +552,221 @@
             }
             return compFiber.stateNode || compFiber;
         },
+        // 默认配置：initDefaultConfig 和 恢复默认 共用同一份，避免漂移
+        rpcDefaults: { domain: 'http://localhost', port: '16800', path: '/jsonrpc', token: '', dir: 'C:' },
+        bcDefaults: { domain: 'http://localhost', port: '8080', path: '/panel/task_add_httpftp_result', user: '', pass: '', dir: '' },
         initDefaultConfig() {
-            let value = [{
-                name: 'setting_rpc_domain',
-                value: 'http://localhost'
-            }, {
-                name: 'setting_rpc_port',
-                value: '16800'
-            }, {
-                name: 'setting_rpc_path',
-                value: '/jsonrpc'
-            }, {
-                name: 'setting_rpc_token',
-                value: ''
-            }, {
-                name: 'setting_rpc_dir',
-                value: 'C:'
-            }, {
-                name: 'setting_terminal_type',
-                value: /Mac/i.test(navigator.platform) ? 'mt'
-                     : /Win/i.test(navigator.platform) ? 'wc' : 'lt'
-            }, {
-                name: 'setting_theme_color',
-                value: '#09AAFF'
-            }, {
-                                // IDM 的抓取端点是固定的本地端口 1001，通过 client id 识别不同实例
-                name: 'setting_idm_rpc',
-                value: [{
-                    id: '1',
-                    default: true
-                }]
-            }];
+            let value = [
+                { name: 'setting_rpc_domain', value: base.rpcDefaults.domain },
+                { name: 'setting_rpc_port', value: base.rpcDefaults.port },
+                { name: 'setting_rpc_path', value: base.rpcDefaults.path },
+                { name: 'setting_rpc_token', value: base.rpcDefaults.token },
+                { name: 'setting_rpc_dir', value: base.rpcDefaults.dir },
+                { name: 'setting_terminal_type', value: /Mac/i.test(navigator.platform) ? 'mt'
+                     : /Win/i.test(navigator.platform) ? 'wc' : 'lt' },
+                { name: 'setting_theme_mode', value: 'auto' },
+                { name: 'setting_theme_color', value: '#09AAFF' },
+                { name: 'setting_bitcomet_domain', value: base.bcDefaults.domain },
+                { name: 'setting_bitcomet_port', value: base.bcDefaults.port },
+                { name: 'setting_bitcomet_path', value: base.bcDefaults.path },
+                { name: 'setting_bitcomet_user', value: base.bcDefaults.user },
+                { name: 'setting_bitcomet_pass', value: base.bcDefaults.pass },
+                { name: 'setting_bitcomet_dir', value: base.bcDefaults.dir },
+                { name: 'setting_idm_rpc', value: [{ id: '1', default: true }] },
+            ];
             value.forEach((v) => {
                 base.getValue(v.name) === undefined && base.setValue(v.name, v.value);
             });
         },
+        // 菜单式主设置页：每行一个设置项，专属配置进子页（结构参考 LinkSwift 的设置项与子页）
         showSetting() {
-                    let dom = '', btn = '',
-                colorList = ['#09AAFF', '#cc3235', '#526efa', '#518c17', '#ed944b', '#f969a5', '#bca280'];
-            dom += `<label class="pl-setting-label"><div class="pl-label">RPC主机</div><input type="text"  placeholder="主机地址，需带上http(s)://" class="pl-input listener-domain" value="${base.esc(base.getValue('setting_rpc_domain'))}"></label>`;
-            dom += `<label class="pl-setting-label"><div class="pl-label">RPC端口</div><input type="text" placeholder="端口号，例如：Motrix为16800" class="pl-input listener-port" value="${base.esc(base.getValue('setting_rpc_port'))}"></label>`;
-            dom += `<label class="pl-setting-label"><div class="pl-label">RPC路径</div><input type="text" placeholder="路径，默认为/jsonrpc" class="pl-input listener-path" value="${base.esc(base.getValue('setting_rpc_path'))}"></label>`;
-            dom += `<label class="pl-setting-label"><div class="pl-label">RPC密钥</div><input type="text" placeholder="无密钥无需填写" class="pl-input listener-token" value="${base.esc(base.getValue('setting_rpc_token'))}"></label>`;
-            dom += `<label class="pl-setting-label"><div class="pl-label">保存路径</div><input type="text" placeholder="留空则使用 aria2 默认下载目录；Windows 示例：C:\\Downloads" class="pl-input listener-dir" value="${base.esc(base.getValue('setting_rpc_dir'))}"></label>`;
-            colorList.forEach((v) => {
-                btn += `<div data-color="${v}" style="background: ${v};border: 1px solid ${v}" class="pl-color-box listener-color ${v === base.getValue('setting_theme_color') ? 'checked' : ''}"></div>`;
+            const rpcVal = `${base.getValue('setting_rpc_domain')}:${base.getValue('setting_rpc_port')}${base.getValue('setting_rpc_path')}`;
+            const idmId = base._idmId();
+            let colorBtn = '';
+            ['#09AAFF', '#cc3235', '#526efa', '#518c17', '#ed944b', '#f969a5', '#bca280'].forEach((v) => {
+                colorBtn += `<div data-color="${v}" style="background: ${v};border: 1px solid ${v}" class="pl-color-box listener-color ${v === base.getValue('setting_theme_color') ? 'checked' : ''}" tabindex="0" role="button"></div>`;
             });
-            dom += `<label class="pl-setting-label"><div class="pl-label">终端类型</div><select class="pl-input listener-terminal">`;
+            let termOpts = '';
             Object.keys(terminalType).forEach(k => {
-                dom += `<option value="${k}" ${base.getValue('setting_terminal_type') === k ? 'selected' : ''}>${terminalType[k]}</option>`;
+                termOpts += `<option value="${k}" ${base.getValue('setting_terminal_type') === k ? 'selected' : ''}>${terminalType[k]}</option>`;
             });
-            dom += `</select></label>`;
-            const idmCfg = base.getValue('setting_idm_rpc');
-            const idmId = (Array.isArray(idmCfg) ? (idmCfg.find(i => i && i.default) || idmCfg[0] || {}).id : (idmCfg && idmCfg.id)) || '1';
-            dom += `<label class="pl-setting-label"><div class="pl-label">IDM 客户端 ID</div><input type="text" placeholder="IDM 多配置时的客户端编号，默认 1" class="pl-input listener-idm-id" value="${base.esc(idmId)}"></label>`;
-            dom += `<label class="pl-setting-label"><div class="pl-label">主题颜色</div> <div class="pl-color">${btn}<div></label>`;
-            dom = '<div>' + dom + '</div>';
-                                                Swal.fire({
-                                                    title: '助手配置',
-                                                    html: dom,
-                                                    icon: 'info',
-                                                    showCloseButton: true,
-                                                    showConfirmButton: false,
-                                                    footer: "",
-                                                    target: document.body,
-                                                    customClass: {
-                                                        container: 'ferrylink-swal-container',
-                                                        popup: 'ferrylink-swal-popup'
-                                                    },
-                                                    didOpen: () => {
-                                                            const container = Swal.getContainer();
-                                                            const popup = Swal.getPopup();
-                                                            if (container) container.style.setProperty('z-index', '2147483647', 'important');
-                                                            if (popup) popup.style.setProperty('z-index', '2147483647', 'important');
-                                                    },
-                                                }).then(() => {
-                                                                            message.success('设置成功！');
-                                                                            history.go(0);
-                                                                        }).catch(err => {
-                                                                            console.error('[showSetting] Swal.fire error:', err);
-                                                                        });
+            const dom = `<div class="pl-setting-list">
+                <div class="pl-setting-row pl-setting-row-click listener-open-idm-setting">
+                    <div class="pl-setting-row-main"><div class="pl-setting-row-name">IDM 客户端</div><div class="pl-setting-row-sub">客户端 ID：${base.esc(idmId)}</div></div>
+                </div>
+                <div class="pl-setting-row pl-setting-row-click listener-open-rpc-setting">
+                    <div class="pl-setting-row-main"><div class="pl-setting-row-name">Aria 配置</div><div class="pl-setting-row-sub">${base.esc(rpcVal)}</div></div>
+                </div>
+                <div class="pl-setting-row pl-setting-row-click listener-open-bc-setting">
+                    <div class="pl-setting-row-main"><div class="pl-setting-row-name">BitComet 配置</div><div class="pl-setting-row-sub">${base.esc(base.getValue('setting_bitcomet_domain') || '')}:${base.esc(base.getValue('setting_bitcomet_port') || '')}${base.esc(base.getValue('setting_bitcomet_path') || '')}</div></div>
+                </div>
+                <div class="pl-setting-row">
+                    <div class="pl-setting-row-main"><div class="pl-setting-row-name">终端类型</div></div>
+                    <select class="pl-input listener-terminal pl-setting-select">${termOpts}</select>
+                </div>
+                <div class="pl-setting-row">
+                    <div class="pl-setting-row-main"><div class="pl-setting-row-name">主题颜色</div></div>
+                    <div class="pl-color">${colorBtn}</div>
+                </div>
+                <div class="pl-setting-row">
+                    <div class="pl-setting-row-main"><div class="pl-setting-row-name">深色模式</div><div class="pl-setting-row-sub listener-theme-mode-sub">${({ auto: '跟随系统', light: '浅色', dark: '深色' })[base.getValue('setting_theme_mode') || 'auto'] || '跟随系统'}</div></div>
+                    <button type="button" class="pl-input listener-theme-mode pl-setting-theme-btn">${({ auto: '跟随系统', light: '浅色', dark: '深色' })[base.getValue('setting_theme_mode') || 'auto'] || '跟随系统'}</button>
+                </div>
+                <div class="pl-setting-help">帮助：<a href="https://www.youxiaohou.com/zh-cn/motrix.html" target="_blank" rel="noreferrer noopener">RPC 配置说明</a> · <a href="https://www.youxiaohou.com/zh-cn/curl.html" target="_blank" rel="noreferrer noopener">cURL 使用教程</a> · <a href="https://github.com/Wjavan/FerryLink" target="_blank" rel="noreferrer noopener">项目主页</a></div>
+            </div>`;
+            Swal.fire({
+                title: '助手配置',
+                html: dom,
+                width: 520,
+                showCloseButton: true,
+                showConfirmButton: false,
+                footer: '',
+                target: document.body,
+                customClass: {
+                    container: 'ferrylink-swal-container',
+                    popup: 'ferrylink-swal-popup'
+                },
+                didOpen: () => {
+                    const container = Swal.getContainer();
+                    const popup = Swal.getPopup();
+                    if (container) container.style.setProperty('z-index', '2147483647', 'important');
+                    if (popup) popup.style.setProperty('z-index', '2147483647', 'important');
+                },
+            }).then(() => {
+                // 点「配置」进入子页的程序化关窗不算退出
+                if (base._settingNav) { base._settingNav = false; return; }
+                message.success('设置成功！');
+                history.go(0);
+            }).catch(err => {
+                console.error('[showSetting] Swal.fire error:', err);
+            });
+            this._bindSettingEvents();
+        },
+        // RPC 专属配置子页；fromSetting=true 时关闭后回主设置页
+        showRPCSetting(fromSetting) {
+            const dom = `<div>
+                <div class="pl-dl-warning-bar" style="display:block">本页配置 Aria2 / Motrix 的 JSON-RPC 参数：Aria2 默认端口 6800、Motrix 默认 16800，按实际运行的客户端填写即可。</div>
+                <label class="pl-setting-label"><div class="pl-label">RPC主机</div><input type="text" placeholder="主机地址，需带上http(s)://" class="pl-input listener-domain" value="${base.esc(base.getValue('setting_rpc_domain'))}"></label>
+                <label class="pl-setting-label"><div class="pl-label">RPC端口</div><input type="text" placeholder="端口号，例如：Motrix为16800" class="pl-input listener-port" value="${base.esc(base.getValue('setting_rpc_port'))}"></label>
+                <label class="pl-setting-label"><div class="pl-label">RPC路径</div><input type="text" placeholder="路径，默认为/jsonrpc" class="pl-input listener-path" value="${base.esc(base.getValue('setting_rpc_path'))}"></label>
+                <label class="pl-setting-label"><div class="pl-label">RPC密钥</div><input type="text" placeholder="无密钥无需填写" class="pl-input listener-token" value="${base.esc(base.getValue('setting_rpc_token'))}"></label>
+                <label class="pl-setting-label"><div class="pl-label">保存路径</div><input type="text" placeholder="留空则使用 aria2 默认下载目录；Windows 示例：C:\\Downloads" class="pl-input listener-dir" value="${base.esc(base.getValue('setting_rpc_dir'))}"></label>
+                <div class="pl-setting-actions"><button type="button" class="pl-dl-btn pl-dl-btn-secondary listener-reset-rpc">恢复默认</button><button type="button" class="pl-dl-btn pl-dl-btn-secondary listener-test-rpc">测试连接</button></div>
+            </div>`;
+            Swal.fire({
+                title: 'Aria 配置',
+                html: dom,
+                showCloseButton: true,
+                showConfirmButton: false,
+                target: document.body,
+                customClass: {
+                    container: 'ferrylink-swal-container',
+                    popup: 'ferrylink-swal-popup pl-popup-flip'
+                },
+                didOpen: () => {
+                    const container = Swal.getContainer();
+                    const popup = Swal.getPopup();
+                    if (container) container.style.setProperty('z-index', '2147483647', 'important');
+                    if (popup) popup.style.setProperty('z-index', '2147483647', 'important');
+                },
+                willClose: () => {
+                    if (fromSetting) base.showSetting();
+                    else { message.success('设置成功！'); history.go(0); }
+                },
+            });
+            this._bindSettingEvents();
+        },
+        // IDM 专属配置子页，附 LinkSwift 同款获取说明
+        showIDMSetting(fromSetting) {
+            const idmId = base._idmId();
+            const dom = `<div>
+                <label class="pl-setting-label"><div class="pl-label">客户端 ID</div><input type="text" placeholder="IDM 多配置时的客户端编号，默认 1" class="pl-input listener-idm-id" value="${base.esc(idmId)}"></label>
+                <div class="pl-setting-tip-text">Client ID 是 IDM 用来区分不同浏览器捕获扩展的编号，多浏览器需各配一个，填错会导致推送失败，一般保持默认 1 即可。取值方法：浏览器进入 IDM 扩展的「管理扩展/调试附加组件」检查视图，在 DevTools 的「应用程序/存储 → 扩展存储 → 本地」里找 client 对应的数字。</div>
+            </div>`;
+            Swal.fire({
+                title: 'IDM 客户端设置',
+                html: dom,
+                showCloseButton: true,
+                showConfirmButton: false,
+                target: document.body,
+                customClass: {
+                    container: 'ferrylink-swal-container',
+                    popup: 'ferrylink-swal-popup pl-popup-flip'
+                },
+                didOpen: () => {
+                    const container = Swal.getContainer();
+                    const popup = Swal.getPopup();
+                    if (container) container.style.setProperty('z-index', '2147483647', 'important');
+                    if (popup) popup.style.setProperty('z-index', '2147483647', 'important');
+                },
+                willClose: () => {
+                    if (fromSetting) base.showSetting();
+                    else { message.success('设置成功！'); history.go(0); }
+                },
+            });
+            this._bindSettingEvents();
+        },
+        // BitComet 远程下载服务器专属配置子页；fromSetting=true 时关闭后回主设置页
+        showBitcometSetting(fromSetting) {
+            const domain = base.getValue('setting_bitcomet_domain') || '';
+            const port = base.getValue('setting_bitcomet_port') || '8080';
+            const path = base.getValue('setting_bitcomet_path') || '/panel/task_add_httpftp_result';
+            const user = base.getValue('setting_bitcomet_user') || '';
+            const pass = base.getValue('setting_bitcomet_pass') || '';
+            const dir = base.getValue('setting_bitcomet_dir') || '';
+            const dom = `<div>
+                <label class="pl-setting-label"><div class="pl-label">服务器地址</div><input type="text" placeholder="主机地址，需带上http(s)://" class="pl-input listener-bc-domain" value="${base.esc(domain)}"></label>
+                <label class="pl-setting-label"><div class="pl-label">服务器端口</div><input type="text" placeholder="端口号，一般为 8080" class="pl-input listener-bc-port" value="${base.esc(port)}"></label>
+                <label class="pl-setting-label"><div class="pl-label">请求路径</div><input type="text" placeholder="一般为 /panel/task_add_httpftp_result" class="pl-input listener-bc-path" value="${base.esc(path)}"></label>
+                <label class="pl-setting-label"><div class="pl-label">服务器账号</div><input type="text" placeholder="远程下载服务的账号，无账号无需填写" class="pl-input listener-bc-user" value="${base.esc(user)}"></label>
+                <label class="pl-setting-label"><div class="pl-label">服务器密码</div><input type="password" placeholder="远程下载服务的密码，无密码无需填写" class="pl-input listener-bc-pass" value="${base.esc(pass)}"></label>
+                <label class="pl-setting-label"><div class="pl-label">保存路径</div><input type="text" placeholder="文件下载后保存路径，留空则使用 BitComet 默认目录" class="pl-input listener-bc-dir" value="${base.esc(dir)}"></label>
+                <div class="pl-setting-actions"><button type="button" class="pl-dl-btn pl-dl-btn-secondary listener-reset-bc">恢复默认</button><button type="button" class="pl-dl-btn pl-dl-btn-secondary listener-test-bc">测试连接</button></div>
+            </div>`;
+            Swal.fire({
+                title: 'BitComet 配置',
+                html: dom,
+                showCloseButton: true,
+                showConfirmButton: false,
+                target: document.body,
+                customClass: {
+                    container: 'ferrylink-swal-container',
+                    popup: 'ferrylink-swal-popup pl-popup-flip'
+                },
+                didOpen: () => {
+                    const container = Swal.getContainer();
+                    const popup = Swal.getPopup();
+                    if (container) container.style.setProperty('z-index', '2147483647', 'important');
+                    if (popup) popup.style.setProperty('z-index', '2147483647', 'important');
+                },
+                willClose: () => {
+                    if (fromSetting) base.showSetting();
+                    else { message.success('设置成功！'); history.go(0); }
+                },
+            });
+            this._bindSettingEvents();
+        },
+        // 设置页全部事件委托，只注册一次（旧版每次打开重复注册）
+        _bindSettingEvents() {
+            if (this.settingBound) return;
+            this.settingBound = true;
             doc.on('click', '.listener-color', async (e) => {
                 base.setValue('setting_theme_color', e.target.dataset.color);
                 message.success('设置成功！');
-                                // 不用 history.go(0) 刷新，主题切换直接改 CSS 类，即时生效
+            });
+            doc.on('keydown', '.listener-color', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); }
+            });
+            doc.on('click', '.listener-theme-mode', () => {
+                const order = ['auto', 'light', 'dark'];
+                const labels = { auto: '跟随系统', light: '浅色', dark: '深色' };
+                const cur = base.getValue('setting_theme_mode') || 'auto';
+                const next = order[(order.indexOf(cur) + 1) % order.length] || 'auto';
+                base.setValue('setting_theme_mode', next);
+                base.applyThemeMode();
+                const label = labels[next] || '跟随系统';
+                $('.listener-theme-mode').text(label);
+                $('.listener-theme-mode-sub').text(label);
             });
             doc.on('input', '.listener-domain', async (e) => {
                 base.setValue('setting_rpc_domain', e.target.value);
@@ -602,95 +790,220 @@
             doc.on('change', '.listener-terminal', async (e) => {
                 base.setValue('setting_terminal_type', e.target.value);
             });
+            // 导航标志：点「配置」程序化关页不算用户关闭
+            doc.on('click', '.listener-open-rpc-setting', () => {
+                base._settingNav = true;
+                Swal.close();
+                base.showRPCSetting(true);
+            });
+            doc.on('click', '.listener-open-idm-setting', () => {
+                base._settingNav = true;
+                Swal.close();
+                base.showIDMSetting(true);
+            });
+            doc.on('click', '.listener-open-bc-setting', () => {
+                base._settingNav = true;
+                Swal.close();
+                base.showBitcometSetting(true);
+            });
+            doc.on('input', '.listener-bc-domain', async (e) => {
+                base.setValue('setting_bitcomet_domain', e.target.value);
+            });
+            doc.on('input', '.listener-bc-port', async (e) => {
+                base.setValue('setting_bitcomet_port', e.target.value);
+            });
+            doc.on('input', '.listener-bc-path', async (e) => {
+                base.setValue('setting_bitcomet_path', e.target.value);
+            });
+            doc.on('input', '.listener-bc-user', async (e) => {
+                base.setValue('setting_bitcomet_user', e.target.value);
+            });
+            doc.on('input', '.listener-bc-pass', async (e) => {
+                base.setValue('setting_bitcomet_pass', e.target.value);
+            });
+            doc.on('input', '.listener-bc-dir', async (e) => {
+                base.setValue('setting_bitcomet_dir', e.target.value);
+            });
+            doc.on('click', '.listener-test-rpc', async (e) => {
+                const $btn = $(e.currentTarget).prop('disabled', true).text('测试中…');
+                await base.testRpcConnection();
+                $btn.prop('disabled', false).text('测试连接');
+            });
+            doc.on('click', '.listener-test-bc', async (e) => {
+                const $btn = $(e.currentTarget).prop('disabled', true).text('测试中…');
+                await base.testBitcometConnection();
+                $btn.prop('disabled', false).text('测试连接');
+            });
+            doc.on('click', '.listener-reset-rpc', () => {
+                if (!window.confirm('将重置所有 Aria2 / Motrix 配置为默认值？当前自定义设置会被覆盖。')) return;
+                ['setting_rpc_domain', 'setting_rpc_port', 'setting_rpc_path', 'setting_rpc_token', 'setting_rpc_dir']
+                    .forEach(k => base.setValue(k, base.rpcDefaults[k.slice('setting_rpc_'.length).toLowerCase()]));
+                base.panelNotice('Aria2 / Motrix 配置已恢复默认', 'success');
+            });
+            doc.on('click', '.listener-reset-bc', () => {
+                if (!window.confirm('将重置所有 BitComet 配置为默认值？当前自定义设置会被覆盖。')) return;
+                ['setting_bitcomet_domain', 'setting_bitcomet_port', 'setting_bitcomet_path', 'setting_bitcomet_user', 'setting_bitcomet_pass', 'setting_bitcomet_dir']
+                    .forEach(k => base.setValue(k, base.bcDefaults[k.slice('setting_bitcomet_'.length).toLowerCase()]));
+                base.panelNotice('BitComet 配置已恢复默认', 'success');
+            });
+        },
+        // IDM 客户端 ID 读取（主菜单行摘要与子页共用）
+        _idmId() {
+            const idmCfg = base.getValue('setting_idm_rpc');
+            return (Array.isArray(idmCfg) ? (idmCfg.find(i => i && i.default) || idmCfg[0] || {}).id : (idmCfg && idmCfg.id)) || '1';
+        },
+        // RPC 连接测试：aria2.getVersion 探活，成功即回显版本号
+        async testRpcConnection() {
+            const domain = base.getValue('setting_rpc_domain'),
+                port = base.getValue('setting_rpc_port'),
+                path = base.getValue('setting_rpc_path'),
+                token = base.getValue('setting_rpc_token');
+            if (!base.validRpcDomain(domain)) { base.panelNotice('请先填写正确的 RPC 主机（仅允许本机或内网地址）', 'error'); return; }
+            const url = `${domain}:${port}${path}`;
+            try {
+                const res = await base.post(url, { id: Date.now(), jsonrpc: '2.0', method: 'aria2.getVersion', params: [`token:${token || ''}`] });
+                const v = res && res.result && res.result.version;
+                if (v) base.panelNotice('连接成功，aria2 版本 ' + v, 'success');
+                else base.panelNotice('Aria2 拒绝请求：' + ((res && res.error && res.error.message) || '未知错误（请检查密钥与路径）'), 'error');
+            } catch (e) {
+                base.panelNotice('无法连接 RPC（' + domain + ':' + port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启', 'error');
+            }
+        },
+        // BitComet 连接测试：POST 一个缺 url 字段的请求，服务端会拒绝建任务但足以验证连通与账号
+        // silent=true 时只返回 true/false，不弹提示（BC-RPC 静默探活用）
+        async testBitcometConnection(silent) {
+            const domain = base.getValue('setting_bitcomet_domain'),
+                port = base.getValue('setting_bitcomet_port'),
+                path = base.getValue('setting_bitcomet_path'),
+                user = base.getValue('setting_bitcomet_user'),
+                pass = base.getValue('setting_bitcomet_pass');
+            if (!base.validRpcDomain(domain)) { if (!silent) base.panelNotice('请先填写正确的服务器地址（仅允许本机或内网地址）', 'error'); return false; }
+            const url = domain + ':' + port + path;
+            const origin = domain + ':' + port;
+            try {
+                await this.post(url, 'a=1', {
+                    'Authorization': 'Basic ' + this.e(user + ':' + pass),
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Cache-Control': 'max-age=0',
+                    'Origin': origin,
+                    'Referer': origin + '/panel/task_add_httpftp',
+                    'User-Agent': navigator.userAgent,
+                }, 'text');
+                if (!silent) base.panelNotice('连接成功', 'success');
+                return true;
+            } catch (e) {
+                if (silent) return false;
+                const msg = (e && e.message) || '';
+                if (/401/.test(msg)) base.panelNotice('服务器已连接，但账号或密码错误', 'warning');
+                else base.panelNotice('无法连接 BitComet（' + domain + ':' + port + '）' + (msg ? '：' + msg : ''), 'error');
+                return false;
+            }
         },
         registerMenuCommand() {
             GM_registerMenuCommand('设置', () => {
                 this.showSetting();
             });
         },
+        // 轻提示：外观沿用 swal2 顶部 toast，但自绘 DOM——swal2 10.x 的任何 fire（含 toast）
+        // 都会 _destroy() 当前打开的 modal，走 Swal 面板就会被连带关闭
+        panelNotice(text, type) {
+            // 同一时刻只有一个提示槽（下面第一行就是删上一条），所以留一份最近文案：
+            // 推送失败时把原因顶到那一行的「链接」格，用户不用去追那条被覆盖的 toast。
+            base._lastNotice = text;
+            $('.pl-dl-toast').remove();
+            const $t = $(`<div class="pl-dl-toast"><span>${base.esc(text)}</span></div>`);
+            // type 只用来定无障碍角色；配色一律白，不做红绿
+            $t.attr('role', type === 'error' ? 'alert' : 'status');
+            $('body').append($t);
+            $t.hide().fadeIn(180);
+            clearTimeout(this._noticeTimer);
+            this._noticeTimer = setTimeout(() => { $t.fadeOut(200, () => $t.remove()); }, 2500);
+        },
         createTip() {
-            $('body').append('<div class="pl-tooltip"></div>');
-            doc.on('click', '.listener-link-copy', async (e) => {
-                base.setClipboard(e.currentTarget.dataset.link);
-                const $btn = $(e.currentTarget);
-                const orig = $btn.html();
-                $btn.html(orig.replace('复制链接', '已复制'));
-                setTimeout(() => { $btn.html(orig); }, 1500);
-            });
-            doc.on('click', '.listener-link-api-btn', async (e) => {
-                base.setClipboard(e.currentTarget.dataset.filename);
-                const $btn = $(e.currentTarget);
-                const orig = $btn.html();
-                $btn.html(orig.replace('复制文件名', '已复制'));
-                setTimeout(() => { $btn.html(orig); }, 1500);
-            });
-            doc.on('click', '.listener-copy-aria', async (e) => {
-                const $btn = $(e.currentTarget);
-                const raw = $btn.attr('data-arialink') || '';
-                try { base.setClipboard(decodeURIComponent(raw)); } catch(err) { base.setClipboard(raw); }
-                const orig = $btn.html();
-                $btn.html(orig.replace('复制下载命令行', '已复制'));
-                setTimeout(() => { $btn.html(orig); }, 1500);
-            });
-            doc.on('mouseenter mouseleave', '.listener-tip', (e) => {
-                if (e.type === 'mouseenter') {
-                    let filename = e.currentTarget.innerText;
-                    let size = e.currentTarget.dataset.size;
-                    let tip = `${base.esc(filename)}<span style="margin-left: 10px;color: #f56c6c;">${base.esc(size)}</span>`;
-                    $(e.currentTarget).css({opacity: '0.5'});
-                    $('.pl-tooltip').html(tip).css({
-                        'left': e.pageX + 10 + 'px',
-                        'top': e.pageY - e.currentTarget.offsetTop > 14 ? e.pageY + 'px' : e.pageY + 20 + 'px'
-                    }).show();
-                } else {
-                    $(e.currentTarget).css({opacity: '1'});
-                    $('.pl-tooltip').hide(0);
-                }
-            });
-
-                        // 一个注册覆盖全部六个适配器——每行 api 渲染都会用到
-            doc.on('click', '.listener-idm', async (e) => {
-                e.preventDefault();
-                const btn = $(e.currentTarget);
-                const href = btn.data('link');
-                if (!/^https?:\/\//i.test(href || '')) {
-                    message.error('提示：下载链接无效！');
+            // ---- L3 UI 层事件委托（下载面板）----
+            doc.on('click', '.pl-dl-chip[data-type="downloader"]', (e) => {
+                const id = e.currentTarget.dataset.id;
+                const oldProto = downloadState.protocol;
+                $('.pl-dl-chip[data-type="downloader"]').removeClass('active');
+                // 再次点击已选中的下载器：取消选择，回到协议总览
+                if (downloadState.downloader === id) {
+                    downloadState.downloader = '';
+                    downloadState.protocol = '';
+                    base._updateProtocolChips();
+                    base._updateMainButton();
                     return;
                 }
-                                // 防止同一请求还没跑完就被重复点击触发第二次——
-                if (btn.attr('data-processing') === 'true') return;
-                btn.attr('data-processing', 'true');
-                const original = btn.html();
-                btn.addClass('is-loading').attr('title', '正在推送到 IDM…');
-                                // 这个判断依赖当前页面的类型，对剩下五家网盘的判断逻辑也适用，但迅雷特例需要额外校验。
-                let idmHeaders = {};
-                if (/d\.pcs\.baidu\.com/.test(href)) idmHeaders['User-Agent'] = 'pan.baidu.com';
-                if (/xunlei\.com/.test(href)) {
-                    const xunleiCookie = xunlei && xunlei._getAuthCookie ? xunlei._getAuthCookie() : '';
-                    if (xunleiCookie) idmHeaders['Cookie'] = xunleiCookie;
-                }
-                if (/quark\.cn/.test(href)) {
-                    idmHeaders['User-Agent'] = LOCAL_CONFIG.quark.ua;
-                    idmHeaders['Cookie'] = String(document.cookie);
-                }
-                const res = await base.sendLinkToIDM(href, btn.data('filename'), btn.data('filesize') || 0, idmHeaders);
-                btn.attr('data-processing', 'false');
-                btn.removeClass('is-loading');
-                if (res === 'success') {
-                    btn.addClass('pl-btn-info').text('已推送至 IDM')
-                        .animate({opacity: '0.5'}, "slow");
+                downloadState.downloader = id;
+                $(e.currentTarget).addClass('active');
+                const protos = PROTOCOLS[id];
+                if (oldProto && protos.some(p => p.id === oldProto)) {
+                    // 切换下载器后原协议仍受支持：保留选择，不打扰用户
+                    downloadState.protocol = oldProto;
                 } else {
-                    btn.addClass('pl-btn-danger').text('推送失败：IDM 未响应，请确认已启动并允许连接')
-                        .animate({opacity: '0.5'}, "slow");
-                    setTimeout(() => {
-                        btn.removeClass('pl-btn-danger').html(original)
-                            .attr('title', '需 IDM 已启动，且版本支持本地捕获（2019 年后版本）');
-                    }, 4000);
+                    // 单协议下载器自动选中唯一协议；多协议则不自动选
+                    downloadState.protocol = protos.length === 1 ? protos[0].id : '';
+                }
+                base._updateProtocolChips();
+                base._updateMainButton();
+            });
+            doc.on('click', '.pl-dl-chip[data-type="protocol"]', (e) => {
+                // 协议总览模式（未选下载器）下点击协议：提示先选下载器
+                if (!downloadState.downloader) { base.panelNotice('请先在上方选择下载器', 'info'); return; }
+                downloadState.protocol = e.currentTarget.dataset.id;
+                $('.pl-dl-chip[data-type="protocol"]').removeClass('active');
+                $(e.currentTarget).addClass('active');
+                base._updateMainButton();
+            });
+            doc.on('click', '.listener-dl-execute', async () => {
+                if (!downloadState.downloader || !downloadState.protocol) return;
+                if (!base.panelFiles || !base.panelFiles.length) return;
+                const files = base.panelFiles.map((f, i) => ({ ...f, _idx: i }));
+                await base.executeAction(files, base._activeAdapter);
+            });
+            doc.on('click', '.listener-dl-copy-name', (e) => {
+                if (!base.panelFiles || !base.panelFiles.length) return;
+                const names = base.panelFiles.filter(f => !f.isFolder).map(f => f.filename);
+                const $btn = $(e.currentTarget);
+                const old = $btn.text();
+                if (!names.length) { $btn.text('没有可复制的文件名'); setTimeout(() => $btn.text(old), 1500); return; }
+                base.setClipboard(names.join('\n'));
+                $btn.text('复制完成：成功 ' + names.length + '，失败 0');
+                setTimeout(() => $btn.text(old), 1500);
+            });
+            doc.on('click', '.listener-dl-copy-link', (e) => {
+                if (!base.panelFiles || !base.panelFiles.length) return;
+                const links = base.panelFiles.filter(f => !f.isFolder && f.dlink && /^https?:\/\//.test(f.dlink)).map(f => f.dlink);
+                const $btn = $(e.currentTarget);
+                const old = $btn.text();
+                if (!links.length) { $btn.text('没有可复制的链接'); setTimeout(() => $btn.text(old), 1500); return; }
+                base.setClipboard(links.join('\n'));
+                $btn.text('复制完成：成功 ' + links.length + '，失败 0');
+                setTimeout(() => $btn.text(old), 1500);
+            });
+            doc.on('click', '.pl-dl-anchor', (e) => {
+                const target = e.currentTarget.dataset.anchor;
+                const $el = $('#pl-dl-' + target);
+                if ($el.length) {
+                    $('.pl-dl-panel').animate({ scrollTop: $el[0].offsetTop }, 300);
                 }
             });
-        },
-        createLoading() {
-            return $('<div class="pl-loading"><div class="pl-loading-box"><div><div></div><div></div></div></div></div>');
+            doc.on('keydown', '.pl-dl-anchor', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); }
+            });
+            doc.on('click', '.listener-open-setting', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                base.showSetting();
+            });
+            doc.on('click', '.listener-dl-retry', async () => {
+                const adapter = base._activeAdapter;
+                if (!adapter) return;
+                Swal.close();
+                Swal.showLoading();
+                try { await adapter.getPCSLink(); }
+                catch (err) { Swal.close(); base.renderErrorPanel('获取下载链接失败：' + (err && err.message || '未知错误'), adapter); }
+                finally { if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close(); }
+            });
         },
         createDownloadIframe() {
             if ($('#downloadIframe').length > 0) return;
@@ -701,69 +1014,409 @@
         },
                 // 六个网盘的 API 下载都走同一条路——把 URL 交给隐藏的 iframe，触发浏览器原生下载。
                 // 至于浏览器扩展（比如 IDM）会不会拦截这次导航，那是扩展自己的事，脚本控制不了。
-                // 所以还是留个 IDM 按钮，给想要走这条路的人用。
         iframeDownload(link) {
             if (!/^https?:\/\//i.test(link)) {
-                message.error('提示：下载链接无效！');
+                base.panelNotice('提示：下载链接无效！', 'error');
                 return false;
             }
             this.createDownloadIframe();
             $('#downloadIframe').attr('src', link);
             return true;
         },
-        showMainDialog(title, html, footer) {
-            return Swal.fire({
-                title,
-                html,
-                footer,
-                allowOutsideClick: false,
-                showCloseButton: true,
-                showConfirmButton: false,
-                position: 'top',
-                width,
-                padding: '15px 20px 5px',
-                customClass,
-                willClose: () => {
-                    base._resetData();
-                },
+        // 百度 >50MB 的直链签名绑 UA（认 User-Agent: pan.baidu.com），浏览器自己导航带不了这个头
+        // 服务器就回 403（表现是「下载刚出现就被掐断」）。改由脚本带认证头把字节取回来，再交给浏览器存盘。
+        // onProgress(pct) 把百分比交给调用方，由它画在那一行对应的格子上（不占主按钮的文字）。
+        _streamDownload(f, onProgress) {
+            return new Promise((resolve) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: f.dlink,
+                    headers: base._cdnHeaders(f.dlink),
+                    responseType: 'blob',
+                    onprogress: (r) => { if (r.total > 0 && onProgress) onProgress(Math.floor(r.loaded * 100 / r.total), r.loaded); },
+                    onload: (r) => {
+                        // 204 + 无内容 = 这次请求被 IDM 之类的下载器半路接走了（原版油小猴同款判定），算成功
+                        if (r && r.status === 204) { resolve({ ok: true, by: 'IDM' }); return; }
+                        if (!r || r.status < 200 || r.status >= 300 || !r.response) {
+                            resolve({ ok: false, why: 'HTTP ' + ((r && r.status) || '?') });
+                            return;
+                        }
+                        const url = URL.createObjectURL(r.response);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = f.filename || 'download';
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        setTimeout(() => URL.revokeObjectURL(url), 60000);
+                        resolve({ ok: true });
+                    },
+                    onerror: () => resolve({ ok: false, why: '网络错误' }),
+                    ontimeout: () => resolve({ ok: false, why: '超时' }),
+                });
             });
         },
-        generateAriaRow(filename, dlink, alink, size) {
-            if (typeof alink === 'object') {
-                return `<div class="pl-item">
-                                <div class="pl-item-name">${filename}</div>
-                                <a class="pl-item-link pl-a" target="_blank" rel="noreferrer noopener" href="${base.safeHttpUrl(alink.link)}" data-filename="${base.esc(filename)}" data-link="${base.safeHttpUrl(alink.link)}">${base.esc(decodeURIComponent(alink.text))}</a> </div>`;
+
+        // ---- L3 UI 层：下载面板渲染 ----
+        renderDownloadPanel(files, adapter) {
+            // 存住文件列表和适配器引用，供事件委托 handler 使用
+            base.panelFiles = files;
+            base._activeAdapter = adapter;
+            const savedDL = base.getValue('ferrylink_last_downloader') || '';
+            const savedProto = base.getValue('ferrylink_last_protocol') || '';
+            downloadState = { downloader: '', protocol: '' };
+            if (savedDL && PROTOCOLS[savedDL]) downloadState.downloader = savedDL;
+            if (downloadState.downloader && savedProto) {
+                const protos = PROTOCOLS[downloadState.downloader];
+                if (protos.some(p => p.id === savedProto)) downloadState.protocol = savedProto;
             }
-            return `<div class="pl-item pl-row-api">
-                                <div class="pl-item-name">${filename}</div>
-                                <a class="pl-item-link" href="javascript:void(0)" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}">${base.esc(decodeURIComponent(alink))}</a>
-                                <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
-                                <button class="pl-item-btn pl-btn-primary listener-copy-aria" data-arialink="${alink}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制下载命令行</button><button class="pl-item-btn pl-btn-primary listener-link-rpc" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>推送至 Aria2</button>
-                                </div>`;
+            if (downloadState.downloader && !downloadState.protocol) {
+                const protos = PROTOCOLS[downloadState.downloader];
+                if (protos.length === 1) downloadState.protocol = protos[0].id;
+            }
+
+            const fileRows = files.map((f, i) => {
+                const gray = f.isFolder || !f.dlink || !/^https?:\/\//.test(f.dlink);
+                let reason = '';
+                if (f.isFolder) reason = '文件夹请进入后选择文件';
+                else if (!f.dlink) reason = '该文件未返回下载链接（可能已失效或被禁止下载）';
+                else if (!/^https?:\/\//.test(f.dlink)) reason = f.dlink;
+                const linkText = f.dlink && /^https?:\/\//.test(f.dlink) ? f.dlink : reason;
+                return `<div class="pl-dl-file-row${gray ? ' pl-dl-gray' : ''}" data-index="${i}">
+                    <div class="pl-dl-file-name" title="${base.esc(f.filename)}">${base.esc(f.filename)}</div>
+                    <div class="pl-dl-file-size">${f.sizeStr || ''}</div>
+                    <div class="pl-dl-file-link" title="${base.esc(linkText)}">${base.esc(linkText)}</div>
+                    <div class="pl-dl-file-status" data-status-index="${i}"></div>
+                </div>`;
+            }).join('');
+
+            const dlChips = DOWNLOADERS.map(d => {
+                const active = downloadState.downloader === d.id ? ' active' : '';
+                return `<div class="pl-dl-chip${active}" data-type="downloader" data-id="${d.id}">${d.name}</div>`;
+            }).join('');
+
+            const intro = '已支持六大网盘直链；下载方式覆盖浏览器/IDM/Aria2/Motrix/XDown/BitComet/终端。未选择下载器时展示全部协议，选择下载器后自动筛选可用协议。百度直链带有效期，获取后请尽快使用。';
+            const badCount = files.filter(f => f.isFolder || !f.dlink || !/^https?:\/\//.test(f.dlink)).length;
+            const countLine = files.length === 0 ? '' : `<div class="pl-dl-file-count">共 ${files.length} 个文件${badCount ? '，' + badCount + ' 个不可操作' : ''}</div>`;
+            const emptyHtml = files.length === 0 ? '<div class="pl-dl-empty">请先在页面中选择文件</div>' : `${countLine}<div class="pl-dl-files" id="pl-dl-files">${fileRows}</div>`;
+
+            const html = `<div class="pl-dl-panel">
+                <div class="pl-dl-intro">${intro}</div>
+                <div class="pl-dl-anchors">
+                    <span class="pl-dl-anchor" data-anchor="files" tabindex="0" role="button">文件列表</span>
+                    <span class="pl-dl-anchor" data-anchor="downloaders" tabindex="0" role="button">下载器</span>
+                    <span class="pl-dl-anchor" data-anchor="protocols" tabindex="0" role="button">协议</span>
+                    <span class="pl-dl-anchor" data-anchor="actions" tabindex="0" role="button">操作</span>
+                </div>
+                <div class="pl-dl-warning-bar" id="pl-dl-rpc-warning">尚未配置 Aria2 / Motrix 的 RPC 参数，请先完成配置</div>
+                ${emptyHtml}
+                <div class="pl-dl-section" id="pl-dl-downloaders">
+                    <div class="pl-dl-section-label">选择下载器</div>
+                    <div class="pl-dl-chips">${dlChips}</div>
+                </div>
+                <div class="pl-dl-section" id="pl-dl-protocols">
+                    <div class="pl-dl-section-label" id="pl-dl-protocol-label">${base._protocolLabelText()}</div>
+                    <div class="pl-dl-chips" id="pl-dl-protocol-chips">${base._protocolChipsHtml()}</div>
+                </div>
+                <div class="pl-dl-actions" id="pl-dl-actions">
+                    <button class="pl-dl-btn pl-dl-btn-primary listener-dl-execute" disabled>请先选择下载器</button>
+                    <button class="pl-dl-btn pl-dl-btn-secondary listener-dl-copy-name">复制文件名</button>
+                    <button class="pl-dl-btn pl-dl-btn-secondary listener-dl-copy-link">复制下载链接</button>
+                    <button class="pl-dl-btn pl-dl-btn-secondary pl-dl-btn-right listener-open-setting">助手设置</button>
+                </div>
+                <div class="pl-dl-help">帮助：<a href="https://www.youxiaohou.com/zh-cn/motrix.html" target="_blank" rel="noreferrer noopener">RPC 配置说明</a> · <a href="https://www.youxiaohou.com/zh-cn/curl.html" target="_blank" rel="noreferrer noopener">cURL 使用教程</a> · <a href="https://github.com/Wjavan/FerryLink" target="_blank" rel="noreferrer noopener">项目主页</a></div>
+            </div>`;
+
+            Swal.fire({
+                title: 'FerryLink 下载助手',
+                html, allowOutsideClick: false,
+                showCloseButton: true, showConfirmButton: false,
+                width: 860,
+                padding: '16px 24px 16px',
+                customClass: { popup: 'pl-popup' },
+                willClose: () => { base._resetData(); },
+            });
+            base._updateMainButton();
         },
-        generateRpcRow(filename, dlink, size) {
-            return `<div class="pl-item">
-                                <div class="pl-item-name">${filename}</div>
-                                <button class="pl-item-link listener-link-rpc pl-btn-primary pl-btn-info" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><em class="icon icon-device"></em><span style="margin-left: 5px;">推送到 RPC 下载器</span></button></div>`;
+        renderErrorPanel(errMsg, adapter) {
+            base._activeAdapter = adapter;
+            base.panelFiles = [];
+            Swal.fire({
+                title: '获取下载链接失败',
+                html: `<div class="pl-dl-panel"><div class="pl-dl-error">${base.esc(errMsg)}<br><button class="pl-dl-retry listener-dl-retry">重试</button></div></div>`,
+                allowOutsideClick: false,
+                showCloseButton: true, showConfirmButton: false,
+                width: 860,
+                customClass: { popup: 'pl-popup' },
+            });
         },
-        generateCurlRow(filename, dlink, alink, size) {
-            if (typeof alink === 'object') return base.generateAriaRow(filename, dlink, alink, size);
-            return `<div class="pl-item pl-row-api">
-                                <div class="pl-item-name">${filename}</div>
-                                <a class="pl-item-link" href="javascript:void(0)" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}">${base.esc(decodeURIComponent(alink))}</a>
-                                <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
-                                <button class="pl-item-btn pl-btn-primary listener-copy-aria" data-arialink="${alink}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制下载命令行</button><button class="pl-item-btn pl-btn-primary listener-link-rpc" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>推送至 Aria2</button>
-                                </div>`;
+        _updateMainButton() {
+            const $btn = $('.listener-dl-execute');
+            if (!$btn.length) return;
+            // 一个文件都没勾选时：主按钮照样能算出协议文案（比如 XDown 的「复制命令」）并保持可点，
+            // 但点击会被事件委托里的 `if (!base.panelFiles.length) return;` 静默挡掉 —— 用户看到的是
+            // 「点了没反应」。这里直接禁用并写明原因，文案与面板空态一致。
+            if (!base.panelFiles || !base.panelFiles.length) { $btn.prop('disabled', true).text('请先在页面中选择文件'); return; }
+            if (!downloadState.downloader) { $btn.prop('disabled', true).text('请先选择下载器'); return; }
+            const protos = PROTOCOLS[downloadState.downloader];
+            if (!downloadState.protocol && protos.length === 1) {
+                downloadState.protocol = protos[0].id;
+                $('.pl-dl-chip[data-type="protocol"]').removeClass('active');
+                $(`.pl-dl-chip[data-type="protocol"][data-id="${downloadState.protocol}"]`).addClass('active');
+            }
+            if (!downloadState.protocol) { $btn.prop('disabled', true).text('请先选择下载协议'); return; }
+            const proto = protos.find(p => p.id === downloadState.protocol);
+            if (!proto) { $btn.prop('disabled', true).text('请先选择下载协议'); return; }
+            $btn.prop('disabled', false);
+            if (proto.btn) $btn.text(proto.btn);
+            else if (proto.act === 'nav') $btn.text('开始下载');
+            else if (proto.act === 'push') $btn.text('推送下载任务');
+            else if (proto.act === 'copy') $btn.text('复制命令');
         },
-        generateBCRow(filename, dlink, alink, size, extra = '') {
-            if (typeof alink === 'object') return base.generateAriaRow(filename, dlink, alink, size);
-            return `<div class="pl-item pl-row-api">
-                                <div class="pl-item-name">${filename}</div>
-                                <a class="pl-item-link" target="_blank" rel="noreferrer noopener" href="${base.esc(decodeURIComponent(alink))}" data-filename="${base.esc(filename)}" data-link="${base.esc(alink)}">${base.esc(decodeURIComponent(alink))}</a>
-                                ${extra}
-                                <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(alink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
-                                </div>`;
+        _protocolLabelText() {
+            return downloadState.downloader ? '可用协议' : '全部协议（选择下载器后自动筛选）';
         },
+        // 单个协议 chip 的 HTML（总览与筛选共用，title 说明来自 PROTO_TITLES）
+        _protoChip(p) {
+            const active = downloadState.protocol === p.id ? ' active' : '';
+            return `<div class="pl-dl-chip${active}" data-type="protocol" data-id="${p.id}" title="${base.esc(PROTO_TITLES[p.id] || '')}">${p.name}</div>`;
+        },
+        // 协议 chips 区 HTML：未选下载器时按协议族分组展示总目录，否则展示该下载器可用协议
+        _protocolChipsHtml() {
+            if (!downloadState.downloader) {
+                return ALL_PROTOCOLS.map(g => `
+                    <div class="pl-dl-proto-group">
+                        <div class="pl-dl-proto-group-label">${g.label}</div>
+                        <div class="pl-dl-chips">${g.items.map(p => base._protoChip(p)).join('')}</div>
+                    </div>`).join('');
+            }
+            return PROTOCOLS[downloadState.downloader].map(p => base._protoChip(p)).join('');
+        },
+        _updateProtocolChips() {
+            const $c = $('#pl-dl-protocol-chips');
+            if (!$c.length) return;
+            $('#pl-dl-protocol-label').text(base._protocolLabelText());
+            $c.html(base._protocolChipsHtml());
+        },
+        // ---- L4 交付层 ----
+        async executeAction(files, adapter) {
+            if (!downloadState.downloader || !downloadState.protocol) return;
+            const protos = PROTOCOLS[downloadState.downloader];
+            const proto = protos.find(p => p.id === downloadState.protocol);
+            if (!proto) return;
+            const valid = files.filter(f => !f.isFolder && f.dlink && /^https?:\/\//.test(f.dlink));
+            if (!valid.length) { base.panelNotice('没有可操作的文件', 'warning'); return; }
+            // 先记住本次选择再弹窗——弹窗确认后面板会按 GM 值重建，先写后弹才不会恢复成旧的
+            base.setValue('ferrylink_last_downloader', downloadState.downloader);
+            base.setValue('ferrylink_last_protocol', downloadState.protocol);
+            // 百度 50MB 预扫描：仅浏览器下载与 Aria2c 命令行会受 CDN 限制（其余方式带认证头不受限）
+            const over = (proto.act === 'nav' || proto.id === 'aria2c') ? valid.filter(f => base._isBigBaiduLink(f)) : [];
+            if (over.length) {
+                const list = over.map(f => base.esc(f.filename) + '（' + base.sizeFormat(f.rawSize) + '）').join('<br>');
+                const tip = proto.act === 'nav'
+                    ? '<br><br>这些文件会由脚本带认证头取回（进度显示在对应那一行）；失败时请改用 IDM / Aria2 / curl'
+                    : '<br><br>命令行下载需携带认证头（脚本已自动附加）';
+                const r = await Swal.fire({
+                    title: '文件超过 50MB',
+                    html: '以下文件超过 50MB，浏览器自带下载会被服务器 403 拒绝：<br>' + list + tip,
+                    icon: 'warning',
+                    showCancelButton: true,
+                    confirmButtonText: '继续下载',
+                    cancelButtonText: '重新选择',
+                });
+                // 弹这个框会把下载面板销毁（swal2 弹窗单例），两个分支都先把面板恢复回来
+                base.renderDownloadPanel(base.panelFiles || [], base._activeAdapter);
+                if (!r.isConfirmed) return;
+            }
+            if (proto.act === 'nav') await base._executeNav(valid, adapter);
+            else if (proto.act === 'push') await base._executePush(valid, adapter);
+            else if (proto.act === 'copy') await base._executeCopy(valid, adapter);
+        },
+        async _executeNav(files, adapter) {
+            // 50MB 预扫描已在 executeAction 统一处理
+            // 面板可能刚被确认弹窗销毁后重建，按钮引用要重新取
+            const $btn = $('.listener-dl-execute');
+            if (files.length > 5) base.panelNotice('共 ' + files.length + ' 个文件，逐个触发中…如遇拦截可改用推送/复制', 'info');
+            $btn.text('正在逐个触发 ' + files.length + ' 个下载…').prop('disabled', true);
+            let ok = 0, fail = 0;
+            for (let i = 0; i < files.length; i++) {
+                const f = files[i];
+                const $st = $('.pl-dl-file-status[data-status-index="' + f._idx + '"]');
+                if (base._isBigBaiduLink(f)) {
+                    // 浏览器自带下载带不了百度要的 UA（必然 403），改由脚本带认证头取回。
+                    // 进度就画在「链接」那一格（它是 flex:1 的宽格），取回期间顶替掉链接占位——
+                    // 别往 22px 的状态格里塞，那会把这一行挤得很难看。
+                    const $bar = $st.siblings('.pl-dl-file-link');
+                    const linkText = $bar.text();
+                    const dark = $(document.body).hasClass('fl-dark');
+                    const track = dark ? '#3f4041' : '#eef0f2';
+                    // 速度：GM_xhr 只给 loaded/total，不给速度，用两次采样的（字节差/时间差）自己算，
+                    // 再做一次指数平滑，免得数字每 100ms 乱跳。采样间隔 <200ms 时差值会被计时粒度放大，直接跳过。
+                    let lastLoaded = 0, lastTs = Date.now(), spd = 0;
+                    // 进度条 = 这一格的底色（linear-gradient 当填充），不新增 DOM、不动布局
+                    const paint = (pct, loaded) => {
+                        if (typeof loaded === 'number') {
+                            const now = Date.now(), dt = now - lastTs;
+                            if (dt >= 200) {
+                                const inst = (loaded - lastLoaded) / (dt / 1000);
+                                spd = spd ? spd * 0.6 + inst * 0.4 : inst;
+                                lastLoaded = loaded; lastTs = now;
+                            }
+                        }
+                        $bar.css({
+                            borderRadius: '8px', textAlign: 'center', fontFamily: 'inherit',
+                            background: 'linear-gradient(to right, ' + (color || '#09AAFF') + ' ' + pct + '%, ' + track + ' ' + pct + '%)',
+                                    color: pct > 50 ? '#fff' : (dark ? '#e8eaed' : '#606266'),
+                        }).text('下载中 ' + pct + '%' + (spd > 0 ? ' · ' + base.sizeFormat(spd) + '/s' : ''));
+                    };
+                    paint(0);
+                    const r = await base._streamDownload(f, paint);
+                    $bar.removeAttr('style').text(linkText);
+                    if (r.ok) {
+                        ok++;
+                        $st.html(MARK_OK);
+                        // 204 = IDM 把请求接走了（原版文案），否则用户会疑惑「打勾了但没弹保存框」
+                        if (r.by) base.panelNotice('已成功唤起 ' + r.by + '，请查看 ' + r.by + ' 下载框！', 'success');
+                    } else {
+                        fail++;
+                        $st.html(MARK_NO);
+                        base.panelNotice('下载失败：' + r.why + '。大文件请用 IDM/Aria2/cURL。', 'error');
+                    }
+                } else {
+                    const r = base.iframeDownload(f.dlink);
+                    if (r) { ok++; $st.html(MARK_OK); } else { fail++; $st.html(MARK_NO); }
+                }
+                if (i < files.length - 1) await base.sleep(800);
+            }
+            $btn.text('下载完成：成功 ' + ok + '，失败 ' + fail);
+            setTimeout(() => base._updateMainButton(), 4000);
+        },
+        async _executePush(files, adapter) {
+            const $btn = $('.listener-dl-execute');
+            const pid = downloadState.protocol;
+            if (pid === 'idm') {
+                $btn.text('正在推送 ' + files.length + ' 个任务至 IDM…').prop('disabled', true);
+                let ok = 0, fail = 0;
+                for (let f of files) {
+                    let h = {};
+                    const r = await base.sendLinkToIDM(f.dlink, f.filename, f.rawSize || 0, base._cdnHeaders(f.dlink));
+                    if (r === 'success') { ok++; $('.pl-dl-file-status[data-status-index="' + f._idx + '"]').html(MARK_OK); }
+                    else { fail++; $('.pl-dl-file-status[data-status-index="' + f._idx + '"]').html(MARK_NO); }
+                }
+                $btn.text('推送完成：成功 ' + ok + '，失败 ' + fail);
+                if (fail > 0) base.panelNotice('部分文件推送失败：IDM 未响应', 'error'); else if (ok > 0) base.panelNotice('已推送至 IDM', 'success');
+                setTimeout(() => base._updateMainButton(), 4000);
+            } else if (pid === 'rpc') {
+                const d = base.getValue('setting_rpc_domain'), p = base.getValue('setting_rpc_port'), pa = base.getValue('setting_rpc_path');
+                if (!d || !p || !pa) { $('#pl-dl-rpc-warning').show(); base.showRPCSetting(false); return; }
+                $('#pl-dl-rpc-warning').hide();
+                $btn.text('正在推送 ' + files.length + ' 个任务至 RPC…').prop('disabled', true);
+                let ok = 0, fail = 0;
+                for (let f of files) {
+                    const $cell = $('.pl-dl-file-status[data-status-index="' + f._idx + '"]');
+                    base._lastNotice = '';   // 清掉上一条，免得把别人的提示当成本次失败原因
+                    const r = await adapter.sendLinkToRPC(f.filename, f.dlink);
+                    if (r === 'success') { ok++; $cell.html(MARK_OK); }
+                    else { fail++; $cell.html(MARK_NO); base._markFailWithReason($cell, base._lastNotice); }
+                }
+                $btn.text('推送完成：成功 ' + ok + '，失败 ' + fail);
+                if (fail > 0) base.panelNotice('部分文件推送失败，原因见各行说明', 'error'); else if (ok > 0) base.panelNotice('已推送至 Aria2，下载已开始', 'success');
+                setTimeout(() => base._updateMainButton(), 4000);
+            } else if (pid === 'bc-rpc') {
+                // 先探远程：通就走 WebUI 推送（静默，无浏览器弹框）；不通就直接调起本地 BitComet。
+                // 探活不报错，只有本地这一步失败才报。
+                // 探活硬上限 2.5s：base.post 默认 30s 超时，而下面 _launchBC 依赖按钮点击带来的
+                // transient activation（约 5s）——探活卡住会把 activation 耗光，导航被浏览器丢掉。
+                // 超时了就按「远程不可用」处理（后台那个请求会被 _resetData abort）。
+                const remote = await Promise.race([
+                    base.testBitcometConnection(true),
+                    base.sleep(2500).then(() => false),
+                ]);
+                if (!remote) { base._launchBC(files); return; }
+                $btn.text('正在推送 ' + files.length + ' 个任务至 BitComet…').prop('disabled', true);
+                let ok = 0, fail = 0;
+                for (let f of files) {
+                    const $cell = $('.pl-dl-file-status[data-status-index="' + f._idx + '"]');
+                    base._lastNotice = '';
+                    const r = await base.sendLinkToBitcomet(f.filename, f.dlink, base._cdnHeaders(f.dlink));
+                    if (r === 'success') { ok++; $cell.html(MARK_OK); }
+                    else { fail++; $cell.html(MARK_NO); base._markFailWithReason($cell, base._lastNotice); }
+                }
+                $btn.text('推送完成：成功 ' + ok + '，失败 ' + fail);
+                if (ok > 0) base.panelNotice('已推送至 BitComet', 'success');
+                setTimeout(() => base._updateMainButton(), 4000);
+            }
+        },
+        // 推送失败时把原因顶到那一行的「链接」格（那格宽，能读；全文挂 title 悬停看），
+        // 状态格继续放 ✗。原因就是刚才弹过的那条提示（panelNotice 存在 _lastNotice）。
+        _markFailWithReason($cell, why) {
+            const text = why || '推送失败（未返回原因）';
+            $cell.siblings('.pl-dl-file-link').text(text).attr('title', text);
+        },
+        // 本地调起：把一个真实 <a href="bc://…"> 插进页面并 click()。
+        // 与 LinkSwift 同一个机制（浏览器发起 bc:// 导航，交给系统弹「是否打开 BitComet」）。
+        // 得赶在按钮点击带来的 transient user activation 有效期内（约 5s）执行，
+        // 所以先探远程、探不通再走这里，全程不插额外按钮。
+        // 检测不到浏览器是否真的丢弃了导航，只能按「地址生成成功」计 ok。
+        _launchBC(files) {
+            const $btn = $('.listener-dl-execute');
+            const adapter = base._activeAdapter;
+            if (!adapter) return;
+            let ok = 0, fail = 0, delay = 0;
+            files.forEach((f, i) => {
+                const idx = (f._idx != null) ? f._idx : i;
+                let b = '';
+                try { b = adapter.convertLinkToBC(f.dlink, f.filename, panInfo.ua || navigator.userAgent); } catch (e) { b = ''; }
+                if (typeof b === 'object') b = b.link || '';
+                const url = decodeURIComponent(b || '');
+                const $cell = $('.pl-dl-file-status[data-status-index="' + idx + '"]');
+                if (!/^bc:\/\//i.test(url)) { fail++; $cell.html(MARK_NO); return; }
+                setTimeout(() => {
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.style.display = 'none';
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(() => a.remove(), 0);
+                }, delay);
+                delay += 600;   // 多个任务错开，避免连续导航被浏览器合并/丢弃
+                ok++;
+                $cell.html(MARK_OK);
+            });
+            $btn.text('推送成功：成功 ' + ok + '，失败 ' + fail);
+            if (fail > 0) base.panelNotice('调起失败 ' + fail + ' 个：bc:// 地址生成失败', 'error');
+            setTimeout(() => base._updateMainButton(), 4000);
+        },
+        async _executeCopy(files, adapter) {
+            const $btn = $('.listener-dl-execute');
+            $btn.text('正在生成命令…').prop('disabled', true);
+            const pid = downloadState.protocol;
+            let parts = [];
+            for (let f of files) {
+                let cmd = '';
+                if (pid === 'aria2c') {
+                    let a = adapter.convertLinkToAria(f.dlink, f.filename, panInfo.ua || navigator.userAgent);
+                    if (typeof a === 'object') a = encodeURIComponent(a.link || a.text || '');
+                    cmd = decodeURIComponent(a);
+                } else if (pid === 'curl') {
+                    let c = adapter.convertLinkToCurl(f.dlink, f.filename, panInfo.ua || navigator.userAgent);
+                    if (typeof c === 'object') c = encodeURIComponent(c.link || '');
+                    cmd = decodeURIComponent(c);
+                } else if (pid === 'bc') {
+                    let b = adapter.convertLinkToBC(f.dlink, f.filename, panInfo.ua || navigator.userAgent);
+                    if (typeof b === 'object') b = encodeURIComponent(b.link || '');
+                    cmd = decodeURIComponent(b);
+                } else {
+                    cmd = f.dlink;   // XDown 等：复制原始直链
+                }
+                parts.push(cmd);
+                $('.pl-dl-file-status[data-status-index="' + f._idx + '"]').html(MARK_OK);
+            }
+            base.setClipboard(parts.join('\n'));
+            $btn.text('复制完成：成功 ' + parts.length + '，失败 0');
+            setTimeout(() => base._updateMainButton(), 4000);
+        },
+
 
                 // IDM 用的是本地抓包协议，不是扩展嗅探。IDM 监听 127.0.0.1:1001，所以不需要跨域。
         standHeaders(headers = {}, addDefault = false) {
@@ -792,6 +1445,82 @@
                 ...out
             };
         },
+                // 判定「百度超 50MB」：这类直链签名绑 UA，浏览器导航必 403，得走 _streamDownload 带认证头取回（原因写在那里）
+                _isBigBaiduLink(f) {
+                    return /d\.pcs\.baidu\.com/.test(f.dlink || '') && (f.rawSize || 0) > 50 * 1024 * 1024;
+                },
+                // 可复用的 CDN 认证头：百度/迅雷/夸克 特殊认证头，供 IDM / BitComet 推送复用
+                _cdnHeaders(link) {
+                    const h = {};
+                    if (/d\.pcs\.baidu\.com/.test(link)) h['User-Agent'] = 'pan.baidu.com';
+                    if (/xunlei\.com/.test(link)) {
+                        const xc = xunlei && xunlei._getAuthCookie ? xunlei._getAuthCookie() : '';
+                        if (xc) h['Cookie'] = xc;
+                    }
+                    if (/quark\.cn/.test(link)) {
+                        h['User-Agent'] = LOCAL_CONFIG.quark.ua;
+                        h['Cookie'] = String(document.cookie);
+                    }
+                    return h;
+                },
+                // bc:// 载荷的参数名以官方文档为准：url / refer / cookie / user_agent
+                // （写成 referrer 客户端不认，等于没带 Referer——阿里 CDN 会因此 400/403）。
+                // 适配器只管给头，拼载荷这一份在这里。
+                _bc(link, filename, headers) {
+                    const h = this.standHeaders(headers, true);
+                    const p = [`url=${encodeURIComponent(link)}`];
+                    if (h['Referer']) p.push('refer=' + encodeURIComponent(h['Referer']));
+                    if (h['User-Agent']) p.push('user_agent=' + encodeURIComponent(h['User-Agent']));
+                    if (h['Cookie']) p.push('cookie=' + encodeURIComponent(h['Cookie']));
+                    return encodeURIComponent(`bc://http/${this.e(`AA/${encodeURIComponent(filename)}/?${p.join('&')}ZZ`)}`);
+                },
+                // 推送到 BitComet 远程下载服务（HTTP 推送）
+                async sendLinkToBitcomet(filename, link, headers) {
+                    const domain = base.getValue('setting_bitcomet_domain');
+                    const port = base.getValue('setting_bitcomet_port');
+                    const path = base.getValue('setting_bitcomet_path');
+                    const user = base.getValue('setting_bitcomet_user');
+                    const pass = base.getValue('setting_bitcomet_pass');
+                    const dir = base.getValue('setting_bitcomet_dir') || '';
+                    if (!base.validRpcDomain(domain)) {
+                        base.panelNotice('BitComet 服务器地址无效，仅允许本机或内网地址', 'error');
+                        return 'fail';
+                    }
+                    const url = domain + ':' + port + path;
+                    const origin = domain + ':' + port;   // BitComet 面板自身的 origin
+                    headers = this.standHeaders(headers);
+                    const data = new URLSearchParams();
+                    data.set('url', link);
+                    if (dir) data.set('save_path', dir);
+                    data.set('file_name', filename);
+                    data.set('connection', '200');
+                    for (const [k, v] of Object.entries(headers)) {
+                        const key = k.toLowerCase();
+                        if (key === 'referer') data.set('referrer', v);
+                        else if (key === 'user-agent') data.set('user_agent', v);
+                        else if (key === 'cookie') data.set('cookie', v);
+                    }
+                    try {
+                        const res = await this.post(url, data.toString(), {
+                            'Authorization': 'Basic ' + this.e(user + ':' + pass),
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'Cache-Control': 'max-age=0',
+                            // BitComet 面板的 /panel 接口校验 Origin/Referer：只认面板自身地址，
+                            // 不能沿用 standHeaders 注入的网盘页域名（否则被拒）
+                            'Origin': origin,
+                            'Referer': origin + '/panel/task_add_httpftp',
+                            'User-Agent': navigator.userAgent,
+                        }, 'text');
+                        if (res && String(res).includes('Add task failed!')) {
+                            base.panelNotice('BitComet 添加任务失败', 'error');
+                            return 'fail';
+                        }
+                        return 'success';
+                    } catch (e) {
+                        base.panelNotice('无法连接 BitComet（' + domain + ':' + port + '）' + (e && e.message ? '：' + e.message : ''), 'error');
+                        return 'fail';
+                    }
+                },
         async sendLinkToIDM(link, filename, filesize, headers = {}) {
             const list = base.getValue('setting_idm_rpc') || [];
             const rpc = list.find(i => i && i.default) || list[0] || { id: '1' };
@@ -822,12 +1551,13 @@
                 ];
                                 // 坑 3：信封格式没文档。从左往右读：
                 const data = `MSG#${seq}#13#1#10241:${seq + 1000}:0:${time}:0:1:2:${filesize || 0}:0,${fields.join(',')};`;
-                                // 绕开 base.post——它会拒 4xx 并当 JSON 解析；IDM 的响应是纯文本。
+                
+                // 绕开 base.post——它会拒 4xx 并当 JSON 解析；IDM 的响应是纯文本。
                 const raw = await new Promise((resolve) => {
                     GM_xmlhttpRequest({
                         method: "POST", url, data,
                         headers: { "Content-Type": "text/plain" },
-                                                // withCredentials 必须开——LinkSwift 就是这么做的，关掉就 403。
+                                                // withCredentials 得开——LinkSwift 就是这么做的，关掉就 403。
                         withCredentials: true,
                         timeout: 15000,
                         onload: (r) => resolve(r.responseText || r.response || ''),
@@ -844,17 +1574,7 @@
                 return 'fail';
             });
         },
-        getMirrorList(link, mirror, thread = 2) {
-            let host = new URL(link).host;
-            let mirrors = [];
-            for (let i = 0; i < mirror.length; i++) {
-                for (let j = 0; j < thread; j++) {
-                    let item = link.replace(host, mirror[i]) + '&'.repeat(j);
-                    mirrors.push(item);
-                }
-            }
-            return mirrors.join('\n');
-        },
+
         listenElement(element, callback) {
             if (!element) return;
             if (watched[element]) return;
@@ -874,6 +1594,52 @@
         },
         addPanLinkerStyle() {
             color = base.getValue('setting_theme_color');
+            const darkRules = `
+            .ferrylink-swal-popup, .pl-popup { background: #1d1e1f !important; color: #d8d9da; }
+            .swal2-title { color: #e8eaed; }
+            .swal2-html-container { color: #d8d9da; }
+            .swal2-close { color: #8b8e93; }
+            .swal2-close:hover { color: #d8d9da; }
+            .swal2-confirm { background-color: ${color} !important; }
+            .swal2-cancel { background-color: #3a3b3d !important; color: #d8d9da !important; }
+            .pl-setting-row { border-bottom-color: #343536; }
+            .pl-setting-row-name { color: #e8eaed; }
+            .pl-setting-row-sub, .pl-setting-tip-text, .pl-setting-help { color: #8b8e93; }
+            .pl-setting-row-click:hover { background: #2a2b2c; }
+            .pl-setting-row-click:hover::after { color: ${color}; }
+            .pl-label { color: #e8eaed; }
+            .pl-input { background: #2a2b2c; border-color: #3f4041; color: #e8eaed; }
+            .pl-input::placeholder { color: #6b6e73; }
+            .pl-color-box { border-color: #3f4041; }
+            .pl-color-box.checked { border-color: #e8eaed !important; }
+            .pl-dl-panel { color: #d8d9da; }
+            .pl-dl-intro, .pl-dl-help, .pl-dl-file-count, .pl-dl-section-label, .pl-dl-proto-group-label { color: #8b8e93; }
+            .pl-dl-files { border-top-color: #343536; border-bottom-color: #343536; }
+            .pl-dl-file-row:hover { background: #2a2b2c; }
+            .pl-dl-file-name { color: #e8eaed; }
+            .pl-dl-file-size { color: #8b8e93; }
+            .pl-dl-file-link { color: #a8abb0; }
+            .pl-mark.ok { color: #9ccc65; }
+            .pl-mark.no { color: #e06c75; }
+            .pl-dl-gray .pl-dl-file-link { color: #e06c75; }
+            .pl-dl-anchor { background: #2a2b2c; color: #a8abb0; }
+            .pl-dl-anchor:hover { background: #343536; }
+            .pl-dl-chip { background: #2a2b2c; border-color: #3f4041; color: #c9cacc; }
+            .pl-dl-chip.active { background: ${color}; border-color: ${color}; color: #fff; }
+            .pl-dl-actions { border-top-color: #343536; }
+            .pl-dl-btn-secondary { background: #2a2b2c; color: #c9cacc; border-color: #3f4041; }
+            .pl-dl-btn-secondary:hover { background: #343536; }
+            .pl-dl-btn-primary:disabled { background: #2a2b2c; color: #5b5e63; }
+            .pl-dl-warning-bar { background: #3f2226; color: #e06c75; }
+            .pl-dl-toast { background: #2a2b2c; color: #e8eaed; border-color: #3f4041; }
+            .pl-dl-empty { color: #8b8e93; }
+            .pl-dl-error { color: #e06c75; }
+            .pl-dl-retry { background: #2a2b2c; border-color: ${color}; color: ${color}; }
+            .pl-dl-retry:hover { background: ${color}22; }
+            .swal2-popup, .swal2-title, .swal2-html-container { color: #e8eaed; }
+            `;
+            // 组合选择器每一项都要带前缀，不然只有第一个生效
+            const darkScoped = darkRules.trim().split('\n').map(l => l.trim() ? l.trim().replace(/(^|,\s+)([.#])/g, '$1body.fl-dark $2') : l).join('\n');
             let css = `
             body::-webkit-scrollbar { display: none }
             ::-webkit-scrollbar { width: 6px; height: 10px }
@@ -884,60 +1650,7 @@
             .swal2-popup { font-size: 16px !important; }
             .pl-popup { font-size: 12px !important; border-radius: 6px !important; box-shadow: 0 1px 2px rgb(28 28 32 / 4%), 0 6px 16px rgb(28 28 32 / 8%) !important; }
             .pl-popup a { color: ${color} !important; }
-            .pl-header { padding: 0 !important; align-items: flex-start !important; border-bottom: 1px solid #e6e8eb !important; margin: 0 0 4px !important; padding: 0 0 8px !important; }
-            .pl-title { font-size: 15px !important; font-weight: 600; letter-spacing: -.01em; line-height: 1 !important; white-space: nowrap !important; text-overflow: ellipsis !important; }
-            .pl-content { padding: 0 !important; font-size: 12px !important; }
-            .pl-main { max-height: 400px; overflow-y: auto; margin: 0 -8px; padding: 0 8px; }
-            .pl-footer { font-size: 12px !important; justify-content: flex-start !important; margin: 10px 0 0 !important; padding: 5px 0 0 !important; color: #cc3235 !important; }
-            .pl-item { display: flex; align-items: center; line-height: 22px; border-radius: 4px; transition: background 180ms ease; gap: 6px; padding: 6px 8px; }
-            .pl-item:hover { background: #f5f6f7; }
-            .pl-item-name { flex: 0 0 150px; text-align: left; margin-right: 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; cursor: default; }
-            .pl-item-link { flex: 1; overflow: hidden; text-align: left; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
-            /* api rows: name pinned at 118px, link takes the rest. hover shows full name. */
-            .pl-row-api .pl-item-name { flex: 0 0 118px; margin-right: 0; min-width: 0; font-weight: 500; color: #111; }
-            .pl-row-api .pl-item-link { flex: 1 1 auto; min-width: 60px; overflow: hidden; text-align: left; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; color: #787774; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
-            .pl-item-btn { flex: 0 0 auto; }
-            .pl-a { color: ${color}; text-decoration: none; }
-            .pl-a:hover { text-decoration: underline; opacity: 0.8; }
-            /* IDM filled, copy buttons outlined. */
-            button.pl-item-btn { background: ${color} !important; padding: 4px 8px !important; border-radius: 6px !important; line-height: 1 !important; cursor: pointer !important; color: #fff !important; border: 0 !important; height: 32px !important; box-sizing: border-box !important; display: inline-flex !important; align-items: center !important; justify-content: center !important; white-space: nowrap !important; transition: opacity 180ms ease !important; }
-            button.pl-item-btn.pl-btn-primary.listener-link-copy,
-            button.pl-item-btn.pl-btn-primary.listener-link-api-btn,
-            button.pl-item-btn.pl-btn-primary.listener-copy-aria,
-            button.pl-item-btn.pl-btn-primary.listener-link-rpc { background: #fff !important; color: #111 !important; border: 1px solid #e6e8eb !important; }
-            button.pl-item-btn.pl-btn-primary.listener-link-copy:hover,
-            button.pl-item-btn.pl-btn-primary.listener-link-api-btn:hover,
-            button.pl-item-btn.pl-btn-primary.listener-copy-aria:hover,
-            button.pl-item-btn.pl-btn-primary.listener-link-rpc:hover { background: #f5f6f7 !important; opacity: 1 !important; }
-            button.pl-item-btn.pl-btn-primary.listener-link-copy .pl-ico,
-            button.pl-item-btn.pl-btn-primary.listener-link-api-btn .pl-ico,
-            button.pl-item-btn.pl-btn-primary.listener-copy-aria .pl-ico,
-            button.pl-item-btn.pl-btn-primary.listener-link-rpc .pl-ico { stroke: #787774; }
-            button.pl-item-btn.pl-btn-primary.listener-link-copy:hover .pl-ico,
-            button.pl-item-btn.pl-btn-primary.listener-link-api-btn:hover .pl-ico,
-            button.pl-item-btn.pl-btn-primary.listener-copy-aria:hover .pl-ico,
-            button.pl-item-btn.pl-btn-primary.listener-link-rpc:hover .pl-ico { stroke: #111; }
-            button.pl-item-btn:hover { opacity: 0.9; }
-            button.pl-item-btn:active { filter: brightness(.9); }
-            button.pl-item-btn:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
-            button.pl-item-btn:disabled { background: #f5f6f7; color: #c0c4cc; cursor: not-allowed; filter: none; }
-            .pl-item-tip { display: flex; justify-content: space-between; flex: 1; }
-            .pl-back { width: 70px; background: #f5f6f7; border-radius: 4px; cursor: pointer; margin: 1px 0; transition: background 180ms ease; }
-            .pl-back:hover { background: #e6e8eb; }
-            .pl-back:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
-            .pl-ext { display: inline-block; width: 44px; background: #909399; color: #fff; height: 16px; line-height: 16px; font-size: 12px; border-radius: 4px; }
-            .pl-btn-primary { background: ${color}; border: 0; border-radius: 6px; color: #fff; cursor: pointer; font-size: 12px; outline: none; display: flex; align-items: center; justify-content: center; margin: 2px 0; padding: 6px 0; min-height: 32px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity 180ms ease; }
-            .pl-btn-primary:hover { opacity: 0.9; }
-            .pl-btn-primary:active { filter: brightness(.9); }
-            .pl-btn-primary:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
-            .pl-btn-primary:disabled { background: #f5f6f7; color: #c0c4cc; cursor: not-allowed; filter: none; }
-            .pl-btn-success { background: #55af28; animation: easeOpacity 1.2s 2; animation-fill-mode:forwards }
-            .pl-btn-info { background: #606266; }
-            .pl-btn-warning { background: transparent; color: #da9328; border: 1px solid currentColor; }
-            .pl-btn-warning:hover { background: color-mix(in srgb, #da9328 12%, transparent); }
-            .pl-btn-warning:active { background: color-mix(in srgb, #da9328 20%, transparent); }
-            .pl-btn-warning:focus-visible { outline: 2px solid #da9328; outline-offset: 2px; }
-            .pl-btn-danger { background: #cc3235; }
+            .tag-danger { color: #cc3235; margin: 0 5px; }
             .ali-button { display: inline-flex; align-items: center; justify-content: center; border: 0 solid transparent; border-radius: 5px; white-space: nowrap; flex-shrink: 0; font-size: 14px; line-height: 1.5; outline: 0; touch-action: manipulation; transition: background .3s ease; color: #fff; background: #637dff; margin-left: 20px; padding: 0 12px; position: relative; cursor: pointer; height: 32px; min-height: 32px; }
             .ali-button:hover { background: #7a90ff; }
             .ali-button:focus-visible { outline: 2px solid #637dff; outline-offset: 2px; }
@@ -953,60 +1666,125 @@
             .quark-button { display: inline-flex; align-items: center; justify-content: center; border: 1px solid #ddd; border-radius: 8px; white-space: nowrap; flex-shrink: 0; font-size: 14px; line-height: 1.5; outline: 0; color: #333; background: #fff; margin-right: 10px; padding: 0 14px; position: relative; cursor: pointer; height: 36px; min-height: 32px; transition: background .3s ease; }
             .quark-button:hover { background: #f6f6f6; }
             .quark-button:focus-visible { outline: 2px solid #3f85ff; outline-offset: 2px; }
-            .pl-dropdown-menu { position: absolute; right: 0; top: 30px; padding: 5px 0; color: #303133; background: #fff; z-index: 999; width: 102px; border: 1px solid #e6e8eb; border-radius: 6px; box-shadow: 0 1px 2px rgb(28 28 32 / 4%), 0 6px 16px rgb(28 28 32 / 8%); }
-            .pl-dropdown-menu-item { min-height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 180ms ease; }
-            .pl-dropdown-menu-item:hover { background-color: rgba(132,133,141,0.08); }
-            .pl-button .pl-dropdown-menu { display: none; }
-            .pl-button:hover .pl-dropdown-menu, .pl-button:focus-within .pl-dropdown-menu { display: block!important; }
-            .pl-button-init { opacity: 0.5; animation: easeInitOpacity 1.2s 3; animation-fill-mode:forwards }
-             @keyframes easeInitOpacity { from { opacity: 0.5; } 50% { opacity: 1 } to { opacity: 0.5; } }
-             @keyframes easeOpacity { from { opacity: 1; } 50% { opacity: 0.35 } to { opacity: 1; } }
-            .pl-extra { margin-top: 10px; display: flex }
-            .pl-extra button { flex: 1 }
-            .tag-danger { color: #cc3235; margin: 0 5px; }
             .pointer { cursor: pointer; }
+            /* 设置页：菜单式主设置页行样式（参考 LinkSwift setting-item） */
+            .pl-setting-list { text-align: left; }
+            .pl-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 8px; margin: 0 -8px; border-bottom: 1px solid #e6e8eb; }
+            .pl-setting-row:last-child { border-bottom: 0; }
+            .pl-setting-row-main { flex: 1; min-width: 0; }
+            .pl-setting-row-name { font-size: 14px; color: #303133; }
+            .pl-setting-row-sub { font-size: 11px; color: #909399; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+            .pl-setting-row-click { cursor: pointer; border-radius: 6px; }
+            .pl-setting-row-click::after { content: '›'; font-size: 20px; line-height: 1; color: #c0c4cc; transition: color 150ms; }
+            .pl-setting-row-click:hover { background: #f5f6f7; }
+            .pl-setting-row-click:hover .pl-setting-row-name { color: ${color}; }
+            .pl-setting-row-click:hover::after { color: ${color}; }
+            .pl-setting-tip-text { font-size: 11px; color: #909399; line-height: 1.7; margin-top: 10px; text-align: left; }
+            .pl-setting-help { font-size: 12px; color: #909399; margin-top: 8px; text-align: center; }
+            /* 同 .pl-dl-help a：设置页这一行也是「文字 + 链接」混排，同样要 immune 宿主样式 */
+            .pl-setting-help a { color: ${color}; text-decoration: none; font: inherit; vertical-align: baseline; }
+            .pl-setting-help a:hover { text-decoration: underline; }
             .pl-setting-label { display: flex; align-items: center; justify-content: space-between; padding-top: 10px; }
             .pl-label { flex: 0 0 100px; text-align: left; }
             .pl-input { flex: 1; padding: 8px 10px; border: 1px solid #e6e8eb; border-radius: 6px; font-size: 14px; background: #fff; color: #303133; transition: border-color 180ms ease; }
             .pl-input:focus { outline: none; border-color: ${color}; }
-            .pl-color { flex: 1; display: flex; flex-wrap: wrap; margin-right: -10px; }
-            .pl-color-box { width: 35px; height: 35px; margin: 10px 10px 0 0; box-sizing: border-box; border: 1px solid #e6e8eb; cursor: pointer; }
+            .pl-setting-select { flex: 0 0 180px; min-height: 36px; cursor: pointer; appearance: none; -webkit-appearance: none; padding-right: 30px; background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23909399' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
+            .pl-setting-select:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
+            .pl-color { flex: 1; display: flex; flex-wrap: wrap; gap: 8px; }
+            .pl-color-box { width: 30px; height: 30px; box-sizing: border-box; border: 1px solid #e6e8eb; border-radius: 6px; cursor: pointer; transition: border-color 150ms; }
+            .pl-color-box:hover { border-color: ${color}; }
             .pl-color-box.checked { border: 3px dashed #303133 !important }
             .pl-color-box:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
-            .pl-close:focus { outline: 0; box-shadow: none; }
-            .pl-tooltip { position: absolute; color: #fff; max-width: 600px; font-size: 12px; padding: 5px 10px; background: #333; border-radius: 6px; z-index: 110000; line-height: 1.3; display: none; word-break: break-all; }
-             @keyframes load { 0% { transform: rotate(0deg) } 100% { transform: rotate(360deg) } }
-            .pl-loading-box > div > div { position: absolute; border-radius: 50%; }
-            .pl-loading-box > div > div:nth-child(1) { top: 9px; left: 9px; width: 82px; height: 82px; background: #fff; }
-            .pl-loading-box > div > div:nth-child(2) { top: 14px; left: 38px; width: 25px; height: 25px; background: #909399; animation: load 1s linear infinite; transform-origin: 12px 36px; }
-            .pl-loading { width: 16px; height: 16px; display: inline-block; overflow: hidden; background: none; }
-            .pl-loading-box { width: 100%; height: 100%; position: relative; transform: translateZ(0) scale(0.16); backface-visibility: hidden; transform-origin: 0 0; }
-            .pl-loading-box div { box-sizing: content-box; }
+            /* swal2 关闭按钮焦点轮廓：Tab 导航或弹窗打开时自动聚焦都会触发 */
+            .swal2-close:focus, .swal2-close:focus-visible { outline: 0 !important; box-shadow: none !important; }
             .swal2-container { z-index: 200000 !important; }
             .ferrylink-swal-container { z-index: 2147483647 !important; }
             .ferrylink-swal-popup { z-index: 2147483647 !important; }
             body.swal2-height-auto { height: inherit !important; }
-            .pl-ico { flex: 0 0 auto; width: 14px; height: 14px; margin-right: 5px; vertical-align: -2px; pointer-events: none; }
-            .pl-btn-primary.is-loading, .pl-item-btn.is-loading, button.pl-item-btn.is-loading {
-                position: relative; color: transparent; pointer-events: none; }
-            .pl-btn-primary.is-loading::before, .pl-item-btn.is-loading::before, button.pl-item-btn.is-loading::before {
-                content: ""; position: absolute; top: 50%; left: 50%;
-                width: 14px; height: 14px; margin: -7px 0 0 -7px;
-                border: 2px solid currentColor; border-top-color: transparent;
-                border-radius: 50%; color: #fff;
-                animation: plSpin 700ms linear infinite; }
-            .pl-btn-primary.is-loading > .pl-ico, .pl-item-btn.is-loading > .pl-ico, button.pl-item-btn.is-loading > .pl-ico { display: none; }
-            .pl-btn-warning.is-loading::before { color: #da9328; }
-             @keyframes plSpin { 0% { transform: rotate(0deg) } 100% { transform: rotate(360deg) } }
-            @media (prefers-reduced-motion: reduce) {
-                .pl-button-init, .pl-btn-success, .pl-btn-primary.is-loading::before,
-                .pl-item-btn.is-loading::before, button.pl-item-btn.is-loading::before { animation: none; }
-                .pl-btn-primary, .ali-button, .tianyi-button, .yidong-button,
-                .xunlei-button, .quark-button, .pl-dropdown-menu-item, .pl-input { transition: none; }
+                        .btn-operate .btn-main { display:flex; align-items:center; }
+            /* ---- L3 UI 层：下载面板样式 pl-dl-* ---- */
+            .pl-dl-panel { width: 100%; font-size: 13px; }
+            .pl-dl-intro { font-size: 13px; color: #606266; line-height: 1.7; margin-bottom: 12px; }
+            .pl-dl-intro a { color: ${color}; }
+            .pl-dl-help { font-size: 12px; color: #909399; margin-top: 10px; }
+            /* 宿主网盘页会给裸 <a> 塞自己的 font-size / font-family / vertical-align。这一行里
+               「帮助：」是裸文本节点、后面三个是 <a>，链接的字号或字体一旦被换掉，两者基线虽然仍共享，
+               字形重心却会错开 —— 看起来就是「帮助：」偏高。让链接与旁边文字完全同源，再兜住对齐属性。 */
+            .pl-dl-help a { color: ${color}; text-decoration: none; font: inherit; vertical-align: baseline; }
+            .pl-dl-help a:hover { text-decoration: underline; }
+            .pl-dl-anchors { display: flex; gap: 6px; margin-bottom: 12px; }
+            .pl-dl-anchor { font-size: 12px; padding: 3px 12px; border-radius: 12px; background: #f0f2f5; cursor: pointer; transition: background 150ms; }
+            .pl-dl-anchor:hover { background: #e6e8eb; }
+            .pl-dl-btn:focus-visible, .pl-dl-chip:focus-visible, .pl-dl-anchor:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
+            .pl-dl-files { max-height: 320px; overflow-y: auto; margin: 0 -10px; padding: 0 10px; border-top: 1px solid #e6e8eb; border-bottom: 1px solid #e6e8eb; }
+            .pl-dl-file-count { font-size: 12px; color: #909399; margin-bottom: 6px; }
+            .pl-dl-file-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; transition: background 180ms; }
+            .pl-dl-file-row:hover { background: #f5f6f7; }
+            .pl-dl-file-name { flex: 0 0 200px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; color: #111; }
+            .pl-dl-file-size { flex: 0 0 70px; font-size: 12px; color: #909399; text-align: right; }
+            .pl-dl-file-link { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #787774; }
+            .pl-dl-file-status { flex: 0 0 auto; font-size: 13px; min-width: 22px; text-align: center; }
+            .pl-mark { font-size: 16px; font-weight: 700; line-height: 1; }
+            .pl-mark.ok { color: #518c17; }
+            .pl-mark.no { color: #cc3235; }
+            .pl-dl-gray { opacity: 0.45; }
+            .pl-dl-gray .pl-dl-file-link { color: #cc3235; }
+            .pl-dl-section { padding: 12px 0; }
+            .pl-dl-section-label { font-size: 12px; color: #909399; margin-bottom: 8px; font-weight: 500; }
+            .pl-dl-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+            .pl-dl-chip { display: inline-flex; align-items: center; padding: 7px 18px; border-radius: 18px; font-size: 13px; border: 1px solid #dcdfe6; background: #fff; color: #606266; cursor: pointer; transition: all 180ms; white-space: nowrap; }
+            .pl-dl-chip:hover { border-color: ${color}; color: ${color}; }
+            .pl-dl-chip.active { background: ${color}; border-color: ${color}; color: #fff; }
+            .pl-dl-chip.disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+            .pl-dl-proto-group { width: 100%; }
+            .pl-dl-proto-group-label { font-size: 12px; color: #909399; margin: 4px 0; }
+            .pl-dl-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #e6e8eb; }
+            .pl-dl-btn { padding: 9px 22px; border-radius: 8px; font-size: 13px; border: 0; cursor: pointer; transition: all 180ms; white-space: nowrap; min-height: 38px; }
+            .pl-dl-btn-primary { background: ${color}; color: #fff; font-size: 14px; font-weight: 500; min-width: 150px; }
+            .pl-dl-btn-primary:hover { opacity: 0.9; }
+            .pl-dl-btn-primary:disabled { background: #f5f6f7; color: #c0c4cc; cursor: not-allowed; font-weight: 400; }
+            .pl-dl-btn-secondary { background: #fff; color: #606266; border: 1px solid #dcdfe6; }
+            .pl-dl-btn-right { margin-left: auto; }
+            .pl-dl-btn-secondary:hover { background: #f5f6f7; }
+            .pl-dl-btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+            .pl-dl-error { padding: 16px; text-align: center; color: #cc3235; }
+            .pl-dl-warning-bar { background: #fef0f0; color: #cc3235; padding: 6px 12px; border-radius: 4px; font-size: 12px; margin: 8px 0; display: none; }
+            .pl-dl-toast { position: fixed; top: 10vh; left: 50%; transform: translateX(-50%); z-index: 2147483647; display: flex; align-items: center; background: #fff; color: #303133; border: 1px solid #e6e8eb; padding: 13px 26px; border-radius: 8px; font-size: 15px; font-weight: 500; box-shadow: 0 4px 16px rgb(28 28 32 / 18%), 0 1px 3px rgb(28 28 32 / 12%); max-width: 80vw; }
+            .pl-dl-toast span { word-break: break-all; }
+            .pl-dl-empty { padding: 28px; text-align: center; color: #909399; font-size: 14px; }
+            .pl-dl-retry { margin-top: 10px; padding: 8px 22px; border-radius: 8px; border: 1px solid ${color}; color: ${color}; background: #fff; cursor: pointer; font-size: 13px; }
+            .pl-dl-retry:hover { background: ${color}11; }
+            /* 弹窗入场：drop（平滑掉落） */
+            @keyframes ferrylinkDrop {
+                0%   { transform: translateY(-30px); opacity: 0; }
+                100% { transform: translateY(0);    opacity: 1; }
             }
-            .btn-operate .btn-main { display:flex; align-items:center; }
+            .swal2-popup:not(.swal2-hide) { animation: ferrylinkDrop 0.42s cubic-bezier(.22,.61,.36,1) both; }
+            .pl-popup-flip:not(.swal2-hide) { animation: ferrylinkFlip 0.45s cubic-bezier(.22,.61,.36,1) both; transform-origin: center; }
+            ::selection { background: ${color}33; color: inherit; }
+            @keyframes ferrylinkFlip {
+                0%   { transform: perspective(800px) rotateY(-80deg); opacity: 0; }
+                100% { transform: perspective(800px) rotateY(0); opacity: 1; }
+            }
+            ${darkScoped}
+            .pl-setting-actions { display: flex; align-items: center; justify-content: center; gap: 80px; padding-top: 14px; }
+            .pl-setting-theme-btn { flex: 0 0 auto; min-height: 32px; padding: 4px 16px; cursor: pointer; }
             `;
             this.addStyle('panlinker-style', 'style', css);
+            this.applyThemeMode();
+            const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+            if (mq) {
+                const fn = () => { if ((base.getValue('setting_theme_mode') || 'auto') === 'auto') $(document.body).toggleClass('fl-dark', mq.matches); };
+                mq.addEventListener ? mq.addEventListener('change', fn) : mq.addListener(fn);
+            }
+        },
+        // 深色模式：auto 跟随系统，light/dark 手动覆盖
+        applyThemeMode() {
+            const mode = base.getValue('setting_theme_mode') || 'auto';
+            let dark;
+            if (mode === 'auto') dark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            else dark = mode === 'dark';
+            $(document.body).toggleClass('fl-dark', dark);
         },
     };
     const LOCAL_CONFIG = {
@@ -1042,7 +1820,6 @@
         xunlei: {
             pcs: {"0": "https://api-pan.xunlei.com/drive/v1/files/"},
             btn: {"home": ".FileMenu__menus--HFKwO"},
-            mirror: ["vod0007-h05-vip-lixian.xunlei.com", "vod0008-h05-vip-lixian.xunlei.com", "vod0009-h05-vip-lixian.xunlei.com", "vod0010-h05-vip-lixian.xunlei.com", "vod0011-h05-vip-lixian.xunlei.com", "vod0012-h05-vip-lixian.xunlei.com", "vod0013-h05-vip-lixian.xunlei.com", "vod0014-h05-vip-lixian.xunlei.com", "vod0067-aliyun08-vip-lixian.xunlei.com", "vod0254-aliyun08-vip-lixian.xunlei.com", "vod0255-aliyun08-vip-lixian.xunlei.com", "vod0256-aliyun08-vip-lixian.xunlei.com", "vod0257-aliyun08-vip-lixian.xunlei.com", "vod0258-aliyun08-vip-lixian.xunlei.com", "vod0259-aliyun08-vip-lixian.xunlei.com", "vod0260-aliyun08-vip-lixian.xunlei.com", "vod0261-aliyun08-vip-lixian.xunlei.com", "vod0262-aliyun08-vip-lixian.xunlei.com", "vod0263-aliyun08-vip-lixian.xunlei.com", "vod0264-aliyun08-vip-lixian.xunlei.com", "vod0265-aliyun08-vip-lixian.xunlei.com", "vod0266-aliyun08-vip-lixian.xunlei.com", "vod0267-aliyun08-vip-lixian.xunlei.com", "vod0554-aliyun06-vip-lixian.xunlei.com", "vod0555-aliyun06-vip-lixian.xunlei.com", "vod0556-aliyun06-vip-lixian.xunlei.com", "vod0680-aliyun08-vip-lixian.xunlei.com", "vod0681-aliyun08-vip-lixian.xunlei.com", "vod0682-aliyun08-vip-lixian.xunlei.com", "vod0683-aliyun08-vip-lixian.xunlei.com", "vod0684-aliyun08-vip-lixian.xunlei.com", "vod0685-aliyun08-vip-lixian.xunlei.com", "vod0686-aliyun08-vip-lixian.xunlei.com", "vod0687-aliyun08-vip-lixian.xunlei.com", "vod0688-aliyun08-vip-lixian.xunlei.com", "vod0689-aliyun08-vip-lixian.xunlei.com", "vod0690-aliyun08-vip-lixian.xunlei.com", "vod0724-aliyun08-vip-lixian.xunlei.com", "vod0725-aliyun08-vip-lixian.xunlei.com", "vod0726-aliyun08-vip-lixian.xunlei.com", "vod0727-aliyun08-vip-lixian.xunlei.com", "vod0728-aliyun08-vip-lixian.xunlei.com", "vod0075.aliyun06.vip.lixian.xunlei.com", "vod0076.aliyun06.vip.lixian.xunlei.com", "vod0077.aliyun06.vip.lixian.xunlei.com", "vod0779-aliyun04-vip-lixian.xunlei.com", "vod0078.aliyun06.vip.lixian.xunlei.com", "vod0780-aliyun04-vip-lixian.xunlei.com", "vod0781-aliyun04-vip-lixian.xunlei.com", "vod0079.aliyun06.vip.lixian.xunlei.com", "vod0080.aliyun06.vip.lixian.xunlei.com", "vod0117.aliyun04.vip.lixian.xunlei.com", "vod0118.aliyun04.vip.lixian.xunlei.com", "vod0119.aliyun04.vip.lixian.xunlei.com", "vod1284-aliyun06-vip-lixian.xunlei.com", "vod1285-aliyun06-vip-lixian.xunlei.com", "vod1363-aliyun06-vip-lixian.xunlei.com", "vod1371-aliyun06-vip-lixian.xunlei.com", "vod1372-aliyun06-vip-lixian.xunlei.com", "vod1426-aliyun06-vip-lixian.xunlei.com", "vod1427-aliyun06-vip-lixian.xunlei.com", "vod1428-aliyun06-vip-lixian.xunlei.com", "vod1429-aliyun06-vip-lixian.xunlei.com", "vod1442-aliyun06-vip-lixian.xunlei.com", "vod1443-aliyun06-vip-lixian.xunlei.com", "vod1444-aliyun06-vip-lixian.xunlei.com", "vod1445-aliyun06-vip-lixian.xunlei.com", "vod1446-aliyun06-vip-lixian.xunlei.com", "vod1447-aliyun06-vip-lixian.xunlei.com", "vod1469-aliyun06-vip-lixian.xunlei.com", "vod1470-aliyun06-vip-lixian.xunlei.com", "vod1471-aliyun06-vip-lixian.xunlei.com", "vod1489-aliyun06-vip-lixian.xunlei.com", "vod1490-aliyun06-vip-lixian.xunlei.com", "vod1491-aliyun06-vip-lixian.xunlei.com", "vod1492-aliyun06-vip-lixian.xunlei.com", "vod1493-aliyun06-vip-lixian.xunlei.com", "vod0215.aliyun06.vip.lixian.xunlei.com", "vod0216.aliyun06.vip.lixian.xunlei.com", "vod0217.aliyun06.vip.lixian.xunlei.com", "vod0218.aliyun06.vip.lixian.xunlei.com", "vod0219.aliyun06.vip.lixian.xunlei.com", "vod0220.aliyun06.vip.lixian.xunlei.com", "vod0241.aliyun08.vip.lixian.xunlei.com", "vod0244.aliyun08.vip.lixian.xunlei.com", "vod0251.aliyun08.vip.lixian.xunlei.com", "vod0252.aliyun08.vip.lixian.xunlei.com", "vod0253.aliyun08.vip.lixian.xunlei.com", "vod0254.aliyun08.vip.lixian.xunlei.com", "vod0255.aliyun08.vip.lixian.xunlei.com", "vod0256.aliyun08.vip.lixian.xunlei.com", "vod0257.aliyun08.vip.lixian.xunlei.com", "vod0260.aliyun08.vip.lixian.xunlei.com", "vod0261.aliyun08.vip.lixian.xunlei.com", "vod0262.aliyun08.vip.lixian.xunlei.com", "vod0263.aliyun08.vip.lixian.xunlei.com", "vod0264.aliyun08.vip.lixian.xunlei.com", "vod0265.aliyun08.vip.lixian.xunlei.com", "vod0266.aliyun08.vip.lixian.xunlei.com", "vod0267.aliyun08.vip.lixian.xunlei.com", "vod3379-aliyun04-vip-lixian.xunlei.com", "vod3380-aliyun04-vip-lixian.xunlei.com", "vod3429-aliyun04-vip-lixian.xunlei.com", "vod3458-aliyun04-vip-lixian.xunlei.com", "vod3459-aliyun04-vip-lixian.xunlei.com", "vod3496-aliyun04-vip-lixian.xunlei.com", "vod3497-aliyun04-vip-lixian.xunlei.com", "vod3498-aliyun04-vip-lixian.xunlei.com", "vod3499-aliyun04-vip-lixian.xunlei.com", "vod3500-aliyun04-vip-lixian.xunlei.com", "vod3501-aliyun04-vip-lixian.xunlei.com", "vod3522-aliyun04-vip-lixian.xunlei.com", "vod3523-aliyun04-vip-lixian.xunlei.com", "vod3533-aliyun04-vip-lixian.xunlei.com", "vod3534-aliyun04-vip-lixian.xunlei.com", "vod3535-aliyun04-vip-lixian.xunlei.com", "vod3536-aliyun04-vip-lixian.xunlei.com", "vod3549-aliyun04-vip-lixian.xunlei.com", "vod3550-aliyun04-vip-lixian.xunlei.com", "vod3551-aliyun04-vip-lixian.xunlei.com", "vod3552-aliyun04-vip-lixian.xunlei.com", "vod3553-aliyun04-vip-lixian.xunlei.com", "vod3554-aliyun04-vip-lixian.xunlei.com", "vod3555-aliyun04-vip-lixian.xunlei.com", "vod0551.aliyun06.vip.lixian.xunlei.com", "vod0552.aliyun06.vip.lixian.xunlei.com", "vod0553.aliyun06.vip.lixian.xunlei.com", "vod0554.aliyun06.vip.lixian.xunlei.com", "vod0555.aliyun06.vip.lixian.xunlei.com", "vod0556.aliyun06.vip.lixian.xunlei.com", "vod0686.aliyun08.vip.lixian.xunlei.com", "vod0687.aliyun08.vip.lixian.xunlei.com", "vod0688.aliyun08.vip.lixian.xunlei.com", "vod0689.aliyun08.vip.lixian.xunlei.com", "vod0724.aliyun08.vip.lixian.xunlei.com", "vod0725.aliyun08.vip.lixian.xunlei.com", "vod0726.aliyun08.vip.lixian.xunlei.com", "vod0727.aliyun08.vip.lixian.xunlei.com", "vod0728.aliyun08.vip.lixian.xunlei.com", "vod0759.aliyun04.vip.lixian.xunlei.com", "vod0760.aliyun04.vip.lixian.xunlei.com", "vod0769.aliyun04.vip.lixian.xunlei.com", "vod0770.aliyun04.vip.lixian.xunlei.com", "vod0771.aliyun04.vip.lixian.xunlei.com", "vod0772.aliyun04.vip.lixian.xunlei.com", "vod0773.aliyun04.vip.lixian.xunlei.com", "vod0774.aliyun04.vip.lixian.xunlei.com", "vod0775.aliyun04.vip.lixian.xunlei.com", "vod0776.aliyun04.vip.lixian.xunlei.com", "vod0777.aliyun04.vip.lixian.xunlei.com", "vod0778.aliyun04.vip.lixian.xunlei.com", "vod0779.aliyun04.vip.lixian.xunlei.com", "vod0780.aliyun04.vip.lixian.xunlei.com", "vod0781.aliyun04.vip.lixian.xunlei.com", "vod3522.aliyun04.vip.lixian.xunlei.com", "vod3523.aliyun04.vip.lixian.xunlei.com", "vod3533.aliyun04.vip.lixian.xunlei.com", "vod3535.aliyun04.vip.lixian.xunlei.com", "vod3550.aliyun04.vip.lixian.xunlei.com", "vod3551.aliyun04.vip.lixian.xunlei.com", "vod3552.aliyun04.vip.lixian.xunlei.com", "vod3553.aliyun04.vip.lixian.xunlei.com", "vod3554.aliyun04.vip.lixian.xunlei.com", "vod3555.aliyun04.vip.lixian.xunlei.com"],
             api: {0: "API 下载", 1: ''},
             aria: {0: "Aria 下载", 1: ''},
             rpc: {0: "RPC 下载", 1: ''},
@@ -1070,16 +1847,18 @@
         },
     };
 
+    // ---- L1 适配层：六个网盘适配器（认证/取链/归一化/命令转换），禁止跨适配器引用 ----
     let baidu = {
-        _getFidList() {
+        _linkCache: [],   // dlink 内存缓存 [{ id: fs_id, expires, data }]，会话级、不落 GM 存储
+        _getFidArray() {
             let fidlist = [];
-            selectList.forEach(v => {
+            selectedFiles.forEach(v => {
                 if (+v.isdir === 1) return;
                 let fid = v.fs_id !== undefined && v.fs_id !== null ? v.fs_id
                     : (v.file_id !== undefined && v.file_id !== null ? v.file_id : v.id);
                 if (fid !== undefined && fid !== null && fid !== '') fidlist.push(fid);
             });
-            return '[' + fidlist + ']';
+            return fidlist;
         },
 
         setBDUSS(done) {
@@ -1126,92 +1905,26 @@
             return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}" -A "${ua}"${cookie}`);
         },
         addPageListener() {
-            function _factory(e) {
-                let target = $(e.target);
-                let item = target.parents('.pl-item');
-                let link = item.find('.pl-item-link');
-                let tip = item.find('.pl-item-tip');
-                return {
-                    item, link, tip, target,
-                };
-            }
-            doc.on('mouseenter mouseleave click', '.pl-button.g-dropdown-button', (e) => {
-                if (e.type === 'mouseleave') {
-                    $(e.currentTarget).removeClass('button-open');
-                } else {
-                    $(e.currentTarget).addClass('button-open');
-                    $(e.currentTarget).find('.pl-dropdown-menu').show();
-                }
+            doc.on('click', '.pl-button', async (e) => {
+                if ($(e.target).closest('.g-button-menu, .menu').length) return;
+                // 这里**不能**用 didOpen 调 Swal.showLoading()：swal2 的 runDidOpen 把 didOpen 包在 setTimeout 里，
+                // 而「一个文件都没勾」这条分支是全同步的（getPCSLink 里 Swal.close() 后紧接 renderDownloadPanel()），
+                // 等 setTimeout 轮到它时面板已经开在 DOM 里了；showLoading() 内部 getPopup/getActions/getLoader
+                // 全是 document.querySelector 全局查询，圈会加到面板自己身上，且再没人对面板调 hideLoading，
+                // 于是面板底部永远转。改成和其他五个网盘一样的同步调法。
+                Swal.fire({ title: '获取下载链接', html: '<div class="pl-fetch-progress">正在获取…</div>', allowOutsideClick: false, showConfirmButton: false });
+                Swal.showLoading();
+                try { await this.getPCSLink(); } catch (err) { Swal.close(); base.renderErrorPanel('获取下载链接失败：' + (err && err.message || '未知错误'), this); } finally { if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close(); }
             });
-            doc.on('mouseleave', '.pl-button.g-dropdown-button .pl-dropdown-menu', (e) => {
-                $(e.currentTarget).hide();
-            });
-            doc.on('click', '.pl-button-mode', async (e) => {
-                            mode = e.target.dataset.mode;
-                            Swal.showLoading();
-                            try {
-                                await this.getPCSLink();
-                            } catch (err) {
-                                Swal.close();
-                                message.error('获取下载链接失败：' + (err && err.message || '未知错误'));
-                            } finally {
-                                                                // getPCSLink 里所有提前返回的路径都覆盖了，漏掉任何一条都会让弹窗残留。
-                                if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close();
-                            }
-                        });
-            doc.on('click', '.listener-link-api', (e) => {
-                e.preventDefault();
-                const link = e.currentTarget.dataset.link;
-                                // 百度只有这种情况：大于 50MB 的浏览器直下请求拿不到内容，所以要提前查文件大小。
-                if (/d\.pcs\.baidu\.com/.test(link)) {
-                    const size = +e.currentTarget.dataset.filesize || 0;
-                    if (size > 50 * 1024 * 1024) {
-                        message.warning('该文件超过 50MB，浏览器无法直接下载。\n请用 IDM / Aria2 / cURL 下载。');
-                        return;
-                    }
-                }
-                base.iframeDownload(link);
-            });
-            doc.on('click', '.listener-back', async (e) => {
-                let o = _factory(e);
-                o.tip.hide();
-                o.link.show();
-            });
-            doc.on('click', '.listener-link-rpc', async (e) => {
-                let target = $(e.currentTarget);
-                target.find('.icon').remove();
-                target.find('.pl-loading').remove();
-                target.prepend(base.createLoading());
-                let res = await this.sendLinkToRPC(e.currentTarget.dataset.filename, e.currentTarget.dataset.link);
-                if (res === 'success') {
-                    target.removeClass('pl-btn-danger').html('发送成功，快去看看吧！').animate({opacity: '0.5'}, "slow");
-                } else {
-                    target.addClass('pl-btn-danger').text('发送失败，请检查您的RPC配置信息！').animate({opacity: '0.5'}, "slow");
-                }
-            });
-            doc.on('click', '.listener-send-rpc', (e) => {
-                $('.listener-link-rpc').click();
-                $(e.target).text('发送完成，发送结果见上方按钮！').animate({opacity: '0.5'}, "slow");
-            });
-            doc.on('click', '.listener-open-setting', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                base.showSetting();
-            });
-            document.documentElement.addEventListener('mouseup', (e) => {
-                if (e.target.nodeName === 'A' && ~e.target.className.indexOf('pl-a')) {
-                    e.stopPropagation();
-                }
-            }, true);
         },
         addButton() {
-            if (!pt) return;
+            if (!pageNum) return;
             let $toolWrap;
-            let $button = $(`<div class="g-dropdown-button pointer pl-button"><div style="color:#fff;background: ${color};border-color:${color}" class="g-button g-button-blue"><span class="g-button-right"><em class="icon icon-download"></em><span class="text" style="width: 60px;">下载助手</span></span></div><div class="menu" style="width:auto;z-index:41;border-color:${color}"><div style="color:${color}" class="g-button-menu pl-button-mode" data-mode="api">API下载</div><div style="color:${color}" class="g-button-menu pl-button-mode" data-mode="aria">Aria下载</div><div style="color:${color}" class="g-button-menu pl-button-mode" data-mode="rpc">RPC下载</div><div style="color:${color}" class="g-button-menu pl-button-mode" data-mode="curl">cURL下载</div><div style="color:${color}" class="g-button-menu pl-button-mode" data-mode="bc">BC下载</div><li class="g-button-menu listener-open-setting">助手设置</li></div></div>`);
-            if (pt === 'home') $toolWrap = $(pan.btn.home);
-            if (pt === 'main') {
-                $toolWrap = $(pan.btn.main);
-                $button = $(`<div class="pl-button" style="position: relative; display: inline-block; margin-right: 8px;"><button class="u-button u-button--primary u-button--small is-round is-has-icon" style="background: ${color};border-color: ${color};font-size: 14px; padding: 8px 16px; border: none;"><i class="u-icon u-icon-download"></i><span>下载助手</span></button><ul class="dropdown-list nd-common-float-menu pl-dropdown-menu"><li class="sub cursor-p pl-button-mode" data-mode="api">API下载</li><li class="sub cursor-p pl-button-mode" data-mode="aria">Aria下载</li><li class="sub cursor-p pl-button-mode" data-mode="rpc">RPC下载</li><li class="sub cursor-p pl-button-mode" data-mode="curl">cURL下载</li><li class="sub cursor-p pl-button-mode" data-mode="bc" >BC下载</li><li class="sub cursor-p listener-open-setting">助手设置</li></ul></div>`);
+            let $button = $(`<div class="pl-button" style="position: relative; display: inline-block; margin-right: 8px;"><div style="color:#fff;background: ${color};border-color:${color}" class="g-button g-button-blue"><span class="g-button-right"><em class="icon icon-download"></em><span class="text" style="width: 60px;">下载助手</span></span></div>`);
+            if (pageNum === 'home') $toolWrap = $(panInfo.btn.home);
+            if (pageNum === 'main') {
+                $toolWrap = $(panInfo.btn.main);
+                $button = $(`<div class="pl-button" style="position: relative; display: inline-block; margin-right: 8px;"><button class="u-button u-button--primary u-button--small is-round is-has-icon" style="background: ${color};border-color: ${color};font-size: 14px; padding: 8px 16px; border: none;"><i class="u-icon u-icon-download"></i><span>下载助手</span></button>`);
             }
             $toolWrap.prepend($button);
             this.setBDUSS();
@@ -1246,9 +1959,9 @@
                         // HEAD/ranged-GET 能从响应头拿到 token，不用新开标签——用户已授权时百度直接 302 到 login_success。
             try {
                 if (base.getFinalUrl) {
-                    let res = await base.getFinalUrl(pan.pcs[3]);
+                    let res = await base.getFinalUrl(panInfo.pcs[3]);
                     if (res.includes('authorize')) {
-                        let html = await base.get(pan.pcs[3], {}, 'text');
+                        let html = await base.get(panInfo.pcs[3], {}, 'text');
                         let bdstoken = html.match(/name="bdstoken"\s+value="([^"]+)"/)?.[1];
                         let client_id = html.match(/name="client_id"\s+value="([^"]+)"/)?.[1];
                         if (bdstoken && client_id) {
@@ -1260,8 +1973,8 @@
                                 display: 'page',
                                 grant_permissions: 'basic,netdisk'
                             };
-                            await base.post(pan.pcs[3], base.stringify(data), {'Content-Type': 'application/x-www-form-urlencoded'});
-                            let res2 = await base.getFinalUrl(pan.pcs[3]);
+                            await base.post(panInfo.pcs[3], base.stringify(data), {'Content-Type': 'application/x-www-form-urlencoded'});
+                            let res2 = await base.getFinalUrl(panInfo.pcs[3]);
                             return saveToken(res2.match(/access_token=([^&]+)/)?.[1]);
                         }
                     } else {
@@ -1272,14 +1985,14 @@
             }
                         // GM_openInTab 的场景：iframe 点不了授权按钮（@match 没覆盖 oauth 页面）。
             base.deleteValue('baidu_access_token');
-            GM_openInTab(pan.pcs[3], {active: false, insert: true, setParent: true});
+            GM_openInTab(panInfo.pcs[3], {active: false, insert: true, setParent: true});
             let token = await waitForToken(60);
             return saveToken(token);
         },
         async getCurrentUK() {
             try {
                 let res = await Promise.race([
-                    base.get('https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo', {"User-Agent": pan.ua}),
+                    base.get('https://pan.baidu.com/rest/2.0/xpan/nas?method=uinfo', {"User-Agent": panInfo.ua}),
                     new Promise((resolve) => setTimeout(() => resolve(null), 3000))
                 ]);
                 if (res && res.errno === 0 && res.user_info && res.user_info.uk) {
@@ -1306,16 +2019,15 @@
                 }
         },
         async getPCSLink(maxRequestTime = 1) {
-            selectList = this.getSelectedList();
-            let fidList = this._getFidList(), url, res;
-            if (pt === 'home' || pt === 'main') {
-                if (selectList.length === 0) {
-                    Swal.close(); return message.error('提示：请先勾选要下载的文件！');
+            selectedFiles = this.getSelectedList();
+            let fidArray = this._getFidArray(), res;
+            if (pageNum === 'home' || pageNum === 'main') {
+                if (selectedFiles.length === 0) {
+                    Swal.close(); return base.renderDownloadPanel([], this);
                 }
-                if (fidList.length === 2) {
+                if (!fidArray.length) {
                     Swal.close(); return message.error('提示：请打开文件夹后勾选文件！');
                 }
-                fidList = encodeURIComponent(fidList);
                 let currentBDUSS = this.getBDUSS();
                 let storedBDUSS = base.getValue('baidu_access_token_bduss');
                 let accessToken = base.getValue('baidu_access_token');
@@ -1329,6 +2041,7 @@
                         base.deleteValue('baidu_access_token');
                         base.deleteValue('baidu_access_token_bduss');
                         base.deleteValue('baidu_access_token_uk');
+                        this._linkCache = [];   // 账号变了，旧 dlink 绑定的是别人的 uk，全废
                         accessToken = '';
                     } else if (currentUK && !storedUK) {
                         base.setValue('baidu_access_token_uk', currentUK);
@@ -1337,103 +2050,117 @@
                     }
                 }
                 if (!accessToken) accessToken = await this.getToken();
-                url = `${pan.pcs[0]}&fsids=${fidList}&access_token=${accessToken}`;
-                res = await base.get(url, {"User-Agent": pan.ua});
-            }
-            if (res.errno === 0) {
-                let files = (res.list || []).filter(v => +v.isdir !== 1);
-                if (!files.length) {
-                                        // 只有勾选里有真正文件时才刷新 token——
-                                        // 全文件夹的勾选也会返回空列表，这时候删 token 会让下次点击多弹一次 OAuth 框。
-                    if (fidList !== encodeURIComponent('[]') && maxRequestTime >= 1) {
+
+                // 命中内存缓存的文件跳过请求。只缓存 dlink 本体——token 是 normalizeList 渲染时现拼的，刷新 token 不影响缓存。
+                const now = Date.now();
+                const files = selectedFiles.filter(v => +v.isdir !== 1);
+                const pending = files.filter(it => {
+                    const idx = this._linkCache.findIndex(c => c.id == it.fs_id);
+                    if (idx === -1) return true;
+                    if (this._linkCache[idx].expires > now) {
+                        Object.assign(it, this._linkCache[idx].data);
+                        return false;
+                    }
+                    this._linkCache.splice(idx, 1);
+                    return true;
+                });
+
+                // 分批取链。百度 filemetas 的 fsids 官方上限 100，取 50 留余量，超限是整单失败。
+                const BATCH = 50;
+                let returnedCount = 0, refreshed = false, anyMarked = false;
+                for (let i = 0; i < pending.length; i += BATCH) {
+                    const batch = pending.slice(i, i + BATCH);
+                    const fsids = encodeURIComponent('[' + batch.map(x => x.fs_id) + ']');
+                    const url = `${panInfo.pcs[0]}&fsids=${fsids}&access_token=${accessToken}`;
+                    try {
+                        res = await base.get(url, {"User-Agent": panInfo.ua});
+                    } catch (e) { res = null; }
+
+                    if (res && res.errno === 112) {
+                        Swal.close(); return message.error('提示：页面过期，请刷新重试！');
+                    }
+                    if (!res || res.errno !== 0) {
+                        // token 失效会波及所有批次：刷新一次 token 本批重试，其余批次用新 token 继续
+                        if (!refreshed && maxRequestTime >= 1) {
+                            refreshed = true;
+                            base.deleteValue('baidu_access_token');
+                            base.deleteValue('baidu_access_token_bduss');
+                            base.deleteValue('baidu_access_token_uk');
+                            accessToken = await this.getToken();
+                            i -= BATCH; continue;
+                        }
+                        const reason = res && res.errno
+                            ? `获取下载地址失败（错误码 ${res.errno}）`
+                            : '请求失败，请重试';
+                        batch.forEach(x => { x.dlink = reason; });
+                        anyMarked = true;
+                    } else if (!Array.isArray(res.list)) {
+                        // 百度可能把错误说明塞进 list 字段（字符串）而不是文件数组，如大文件需 SVIP。
+                        // 这是明确拒绝，不重试，文本直接当行的提示渲染。
+                        const text = typeof res.list === 'string' && res.list ? res.list : '该文件未返回下载链接';
+                        batch.forEach(x => { x.dlink = text; });
+                        anyMarked = true;
+                    } else {
+                        batch.forEach(x => {
+                            const hit = res.list.find(li => li.fs_id == x.fs_id);
+                            if (hit) {
+                                Object.assign(x, hit);
+                                returnedCount++;
+                                this._linkCache.push({ id: x.fs_id, expires: now + 4 * 60 * 60 * 1000, data: hit });
+                            } else if (res.list.length > 0) {
+                                // 列表非空却没有本文件：该文件个体的失败，标记
+                                x.dlink = '该文件未返回下载链接（可能已失效或被禁止下载）';
+                                anyMarked = true;
+                            }
+                            // list 为空数组：疑似 token 问题，不标记，留给循环后的整单重试
+                        });
+                    }
+
+                    const hc = Swal.getHtmlContainer && Swal.getHtmlContainer();
+                    if (hc) hc.textContent = `已获取 ${Math.min(i + BATCH, pending.length)} / ${pending.length} 个地址`;
+                    if (i + BATCH < pending.length) await base.sleep(1000);
+                }
+
+                // 所有批次都返回空 list（未被标记任何文本）：勾选里确有文件（fidArray 已过滤文件夹），空列表只能是 token 问题
+                if (pending.length > 0 && returnedCount === 0 && !anyMarked) {
+                    if (maxRequestTime >= 1) {
                         base.deleteValue('baidu_access_token');
                         base.deleteValue('baidu_access_token_bduss');
                         base.deleteValue('baidu_access_token_uk');
                         await this.getToken();
                         return this.getPCSLink(maxRequestTime - 1);
                     }
-                    let msg = '所选内容未返回可下载的文件：请确认勾选的是【文件】而不是文件夹，然后刷新页面重试';
-                    if (fidList === encodeURIComponent('[]')) {
-                        msg = '所选内容中没有可下载的文件（文件夹不支持），请重新勾选文件';
-                    }
-                    return message.error('提示：' + msg);
+                    return message.error('提示：获取下载链接失败！请刷新网页后重试！');
                 }
-                                let html = this.generateDom(files);
-            base.showMainDialog(pan[mode][0], html, pan[mode][1]);
-                            } else if (res.errno === 112) {
-                Swal.close(); return message.error('提示：页面过期，请刷新重试！');
-            } else {
-                base.deleteValue('baidu_access_token');
-                base.deleteValue('baidu_access_token_bduss');
-                if (maxRequestTime >= 1) {
-                    await this.getToken();
-                    await this.getPCSLink(maxRequestTime - 1);
-                } else {
-                    message.error('提示：获取下载链接失败！请刷新网页后重试！');
-                }
+                const normalized = this.normalizeList(files);
+                base.renderDownloadPanel(normalized, this);
             }
         },
-        generateDom(list) {
-            let content = '<div class="pl-main">';
-            base.sortByName(list);
-            list.forEach((v, i) => {
-                if (v.isdir === 1) return;
-                let filename = base.esc(v.server_filename || v.filename);
-                let ext = base.getExtension(filename);
-                let size = base.sizeFormat(v.size);
-                if (!v.dlink) {
-                    content += `<div class="pl-item"><div class="pl-item-name listener-tip">${filename}</div><span class="pl-item-link pl-a" style="color:#cc3235">该文件未返回下载链接（可能已失效或被禁止下载）</span></div>`;
-                    return;
+        normalizeList(list) {
+            return list.map(v => {
+                // dlink 可能是错误提示文本（分批失败/被拒绝下载），只有真 URL 才拼 token
+                let dlink = '';
+                if (v.dlink) {
+                    dlink = /^https?:\/\//.test(v.dlink)
+                        ? v.dlink + '&access_token=' + base.getValue('baidu_access_token')
+                        : v.dlink;
                 }
-                let dlink = v.dlink + '&access_token=' + base.getValue('baidu_access_token');
-                if (mode === 'api') {
-                    content += `<div class="pl-item pl-row-api">
-                                <div class="pl-item-name">${filename}</div>
-                                <a class="pl-item-link pl-a listener-link-api" title="点击进行浏览器下载" href="${base.esc(dlink)}" data-filename="${base.esc(filename)}" data-filesize="${v.size}" data-link="${base.esc(dlink)}" data-index="${i}">${base.esc(dlink)}</a>
-                                <button class="pl-item-btn pl-btn-primary listener-idm" data-filename="${base.esc(filename)}" data-filesize="${v.size}" data-link="${base.esc(dlink)}" data-index="${i}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>IDM下载</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-api-btn" data-filename="${base.esc(filename)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制文件名</button>
-                                <div class="pl-item-tip" style="display: none"><span>若没有弹出IDM下载框，请在IDM <b>选项</b> -> <b>文件类型</b> -> <b>第一个框</b> 中添加后缀 <span class="pl-ext">${ext}</span> 即可</span> <span class="pl-back listener-back">返回</span></div></div>`;
-                }
-                if (mode === 'aria') {
-                    let alink = this.convertLinkToAria(dlink, filename, pan.ua);
-                    content += base.generateAriaRow(filename, dlink, alink, size);
-                }
-                if (mode === 'rpc') {
-                    content += base.generateRpcRow(filename, dlink, size);
-                }
-                if (mode === 'curl') {
-                    let curlCmd = this.convertLinkToCurl(dlink, filename, pan.ua);
-                    content += base.generateCurlRow(filename, dlink, curlCmd, size);
-                }
-                if (mode === 'bc') {
-                    let bcCmd = this.convertLinkToBC(dlink, filename, pan.ua);
-                    content += base.generateBCRow(filename, dlink, bcCmd, size);
-                }
+                return {
+                    filename: v.server_filename || v.filename || '',
+                    sizeStr: base.sizeFormat(v.size),
+                    rawSize: v.size || 0,
+                    dlink: dlink,
+                    ext: base.getExtension(v.server_filename || v.filename),
+                    isFolder: +v.isdir === 1,
+                    raw: v,
+                };
             });
-            content += '</div>';
-            if (mode === 'rpc') {
-                let rpc = base.getValue('setting_rpc_domain') + ':' + base.getValue('setting_rpc_port') + base.getValue('setting_rpc_path');
-                content += `<div class="pl-extra"><button class="pl-btn-primary listener-send-rpc"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>发送全部链接</button><button title="${rpc}" class="pl-btn-primary pl-btn-warning listener-open-setting" style="margin-left: 10px"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置 RPC 参数（当前为：${rpc}）</button></div>`;
-            }
-            return content;
         },
         async sendLinkToRPC(filename, link) {
-            let rpc = {
-                domain: base.getValue('setting_rpc_domain'),
-                port: base.getValue('setting_rpc_port'),
-                path: base.getValue('setting_rpc_path'),
-                token: base.getValue('setting_rpc_token'),
-                dir: base.getValue('setting_rpc_dir'),
-            };
+            let rpc = base._rpcConfig();
+            if (!rpc) return 'fail';
             let BDUSS = this.getBDUSS();
-            if (!base.validRpcDomain(rpc.domain)) {
-                message.error('RPC主机无效，仅允许本机或内网地址（如 http://127.0.0.1）');
-                return 'fail';
-            }
-            let url = `${rpc.domain}:${rpc.port}${rpc.path}`;
+            let url = rpc.url;
             let rpcData = {
                 id: new Date().getTime(),
                 jsonrpc: '2.0',
@@ -1441,19 +2168,18 @@
                 params: [`token:${rpc.token}`, [link], {
                     dir: rpc.dir,
                     out: base.safeRpcFilename(filename),
-                    header: [`User-Agent: ${pan.ua}`, ...(BDUSS ? [`Cookie: BDUSS=${BDUSS}`] : [])],
+                    header: [`User-Agent: ${panInfo.ua}`, ...(BDUSS ? [`Cookie: BDUSS=${BDUSS}`] : [])],
                 }]
             };
             try {
-                let res = await base.post(url, rpcData, {"User-Agent": pan.ua}, '');
+                let res = await base.post(url, rpcData, {"User-Agent": panInfo.ua}, '');
                 if (res.result) return 'success';
                                 // aria2 收到了请求但拒绝了（token/path 不对），把它的原始错误吐给用户而不是笼统的「失败」。
-                // can tell a bad token from a bad dir instead of a generic "失败".
-                message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
+                base.panelNotice('Aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
                                 // 走到这里几乎都是「端口没开」的情况——aria2 根本没响应。
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
+                base.panelNotice('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
@@ -1461,8 +2187,8 @@
             try {
                 return require('system-core:context/context.js').instanceForSystem.list.getSelected();
             } catch (e) {
-                let pan = document.querySelector('.wp-s-core-pan');
-                return pan && pan.__vue__ ? pan.__vue__.selectedList : [];
+                let panInfo = document.querySelector('.wp-s-core-pan');
+                return panInfo && panInfo.__vue__ ? panInfo.__vue__.selectedList : [];
             }
         },
         detectPage() {
@@ -1474,16 +2200,16 @@
         async initPanLinker() {
             base.initDefaultConfig();
             base.addPanLinkerStyle();
-            pt = this.detectPage();
-            pan = LOCAL_CONFIG.baidu;
-            Object.freeze && Object.freeze(pan);
+            pageNum = this.detectPage();
+            panInfo = LOCAL_CONFIG.baidu;
+            Object.freeze && Object.freeze(panInfo);
             this.addButton();
             base.createTip();
             base.registerMenuCommand();
             this.preflightAccount();
         },
         async initAuthorize() {
-            let ins = setInterval(() => {
+            let authPollTimer = setInterval(() => {
                 if (/openapi.baidu.com\/oauth\/2.0\/authorize/.test(location.href)) {
                     let confirmButton =
                         document.querySelector('#auth-allow') ||
@@ -1505,7 +2231,7 @@
                         this.getCurrentUK().then((uk) => {
                             if (uk) base.setValue('baidu_access_token_uk', uk);
                         });
-                        clearInterval(ins);
+                        clearInterval(authPollTimer);
                         window.close();
                     }
                 }
@@ -1517,55 +2243,26 @@
                     filename = base.fixFilename(filename);
                                         // 阿里的 CDN 没浏览器 UA 就直接 403，aria2c 命令也得带 header——
                                         // 不然生成的命令在用户终端里跑不起来，但脚本内部下载是正常的。
-                    return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 16 -s 16 -k 1M --header "Referer: https://www.aliyundrive.com/" --header "User-Agent: ${ua || navigator.userAgent}"`);
+                    return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 16 -s 16 -k 1M --header "Referer: ${location.origin}/" --header "User-Agent: ${ua || navigator.userAgent}"`);
                 },
         convertLinkToBC(link, filename, ua) {
-            let bc = `AA/${encodeURIComponent(filename)}/?url=${encodeURIComponent(link)}&refer=${encodeURIComponent('https://www.aliyundrive.com/')}ZZ`;
-            return encodeURIComponent(`bc://http/${base.e(bc)}`);
+            // Referer 取当前页 origin：域名会迁移，写死 aliyundrive.com 在 alipan.com 上必 403
+            return base._bc(link, filename, {
+                'Referer': `${location.origin}/`,
+                'User-Agent': ua || navigator.userAgent,
+            });
         },
         convertLinkToCurl(link, filename, ua) {
             let terminal = base.getValue('setting_terminal_type');
             filename = base.fixFilename(filename);
                         // -A 是 curl 的 UA 参数；阿里 CDN 没它直接 403。
-            return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}" -e "https://www.aliyundrive.com/" -A "${ua || navigator.userAgent}"`);
+            return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}" -e "${location.origin}/" -A "${ua || navigator.userAgent}"`);
         },
         addPageListener() {
-            doc.on('click', '.pl-button-mode', async (e) => {
-                        mode = e.target.dataset.mode;
-                        Swal.showLoading();
-                        try {
-                            await this.getPCSLink();
-                        } catch (err) {
-                            Swal.close();
-                            message.error('获取下载链接失败：' + (err && err.message || '未知错误'));
-                        } finally {
-                            if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close();
-                        }
-                    });
-            doc.on('click', '.listener-link-api', (e) => {
-                e.preventDefault();
-                base.iframeDownload(e.currentTarget.dataset.link);
-            });
-            doc.on('click', '.listener-link-rpc', async (e) => {
-                let target = $(e.currentTarget);
-                target.find('.icon').remove();
-                target.find('.pl-loading').remove();
-                target.prepend(base.createLoading());
-                let res = await this.sendLinkToRPC(e.currentTarget.dataset.filename, e.currentTarget.dataset.link);
-                if (res === 'success') {
-                    target.removeClass('pl-btn-danger').html('发送成功，快去看看吧！').animate({opacity: '0.5'}, "slow");
-                } else {
-                    target.addClass('pl-btn-danger').text('发送失败，请检查您的RPC配置信息！').animate({opacity: '0.5'}, "slow");
-                }
-            });
-            doc.on('click', '.listener-send-rpc', (e) => {
-                $('.listener-link-rpc').click();
-                $(e.target).text('发送完成，发送结果见上方按钮！').animate({opacity: '0.5'}, "slow");
-            });
-            doc.on('click', '.listener-open-setting', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                base.showSetting();
+            doc.on('click', '.pl-button', async (e) => {
+                if ($(e.target).closest('.g-button-menu, .menu').length) return;
+                Swal.showLoading();
+                try { await this.getPCSLink(); } catch (err) { Swal.close(); base.renderErrorPanel('获取下载链接失败：' + (err && err.message || '未知错误'), this); } finally { if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close(); }
             });
         },
         async getRealLink(d, f) {
@@ -1577,7 +2274,7 @@
                             return message.error('提示：Token过期或缺失，请刷新网页后重试！');
                         }
                         let authorization = `${tk.token_type} ${tk.access_token}`;
-                        let res = await base.post(pan.pcs[1], {
+                        let res = await base.post(panInfo.pcs[1], {
                             drive_id: d,
                             file_id: f
                         }, {
@@ -1597,14 +2294,14 @@
                     } catch (e) { return ''; }
                 },
         addButton() {
-            if (!pt) return;
+            if (!pageNum) return;
             let $toolWrap;
-            let $button = $(`<div class="ali-button pl-button"><svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" width="16" height="16"><path d="M853.333 938.667H170.667a85.333 85.333 0 0 1-85.334-85.334v-384A85.333 85.333 0 0 1 170.667 384H288a32 32 0 0 1 0 64H170.667a21.333 21.333 0 0 0-21.334 21.333v384a21.333 21.333 0 0 0 21.334 21.334h682.666a21.333 21.333 0 0 0 21.334-21.334v-384A21.333 21.333 0 0 0 853.333 448H736a32 32 0 0 1 0-64h117.333a85.333 85.333 0 0 1 85.334 85.333v384a85.333 85.333 0 0 1-85.334 85.334z" fill="#fff"/><path d="M715.03 543.552a32.81 32.81 0 0 0-46.251 0L554.005 657.813v-540.48a32 32 0 0 0-64 0v539.734L375.893 543.488a32.79 32.79 0 0 0-46.229 0 32.427 32.427 0 0 0 0 46.037l169.557 168.811a32.81 32.81 0 0 0 46.251 0l169.557-168.81a32.47 32.47 0 0 0 0-45.974z" fill="#FF9C00"/></svg><span>下载助手</span><ul class="pl-dropdown-menu"><li class="pl-dropdown-menu-item pl-button-mode" data-mode="api">API下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="aria" >Aria下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="rpc">RPC下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="curl">cURL下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="bc" >BC下载</li><li class="pl-dropdown-menu-item listener-open-setting">助手设置</li></ul></div>`);
-            if (pt === 'home') {
+            let $button = $(`<div class="ali-button pl-button"><svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" width="16" height="16"><path d="M853.333 938.667H170.667a85.333 85.333 0 0 1-85.334-85.334v-384A85.333 85.333 0 0 1 170.667 384H288a32 32 0 0 1 0 64H170.667a21.333 21.333 0 0 0-21.334 21.333v384a21.333 21.333 0 0 0 21.334 21.334h682.666a21.333 21.333 0 0 0 21.334-21.334v-384A21.333 21.333 0 0 0 853.333 448H736a32 32 0 0 1 0-64h117.333a85.333 85.333 0 0 1 85.334 85.333v384a85.333 85.333 0 0 1-85.334 85.334z" fill="#fff"/><path d="M715.03 543.552a32.81 32.81 0 0 0-46.251 0L554.005 657.813v-540.48a32 32 0 0 0-64 0v539.734L375.893 543.488a32.79 32.79 0 0 0-46.229 0 32.427 32.427 0 0 0 0 46.037l169.557 168.811a32.81 32.81 0 0 0 46.251 0l169.557-168.81a32.47 32.47 0 0 0 0-45.974z" fill="#FF9C00"/></svg><span>下载助手</span></div>`);
+            if (pageNum === 'home') {
                                 // CSS module 类名前缀随阿里页面改版会变。
                                 // 先用配置里的精准选择器，找不到再回退到宽松模式。
                 const fallbacks = [
-                    pan.btn.home,
+                    panInfo.btn.home,
                     '[class*="header--"] [class*="actions--"]',
                     '[class*="file-list-header"] [class*="action"]',
                     'header [class*="upload"]',
@@ -1626,9 +2323,9 @@
             this.addPageListener();
         },
         async getPCSLink() {
-                    selectList = this.getSelectedList();
-                    if (selectList.length === 0) {
-                        Swal.close(); return message.error('提示：请先勾选要下载的文件！');
+                    selectedFiles = this.getSelectedList();
+                    if (selectedFiles.length === 0) {
+                        Swal.close(); return base.renderDownloadPanel([], this);
                     }
                     if (this.isOnlyFolder()) {
                         Swal.close(); return message.error('提示：请打开文件夹后勾选文件！');
@@ -1640,7 +2337,7 @@
                 }
                 try {
                     let authorization = `${tk.token_type} ${tk.access_token}`;
-                    const dlQueue = selectList.map(item => base.post(pan.pcs[1], {
+                    const dlQueue = selectedFiles.map(item => base.post(panInfo.pcs[1], {
                         drive_id: item.driveId,
                         file_id: item.fileId,
                     }, {
@@ -1650,10 +2347,10 @@
                         "x-canary": "client=windows,app=adrive,version=v6.0.0"
                     }));
                     (await Promise.all(dlQueue)).forEach((res, i) => {
-                        if (res && res.url) selectList[i].downloadUrl = res.url;
+                        if (res && res.url) selectedFiles[i].downloadUrl = res.url;
                     });
                 } catch (e) {
-                                        // base.post 现在对 4xx 会抛出服务端原始错误信息，不再笼统报「请求失败」。
+                                        // base.post 对 4xx 会抛出服务端原始错误，这里按原文判定是不是 token 失效
                     Swal.close();
                     const m = (e && e.message) || '';
                     if (/AccessTokenInvalid|token/i.test(m)) {
@@ -1661,11 +2358,11 @@
                     }
                     return message.error('提示：获取下载链接失败（' + m + '），请刷新重试！');
                 }
-                if (selectList.length > 20) {
+                if (selectedFiles.length > 20) {
                     Swal.close();
                     return message.error('提示：单次最多可勾选 20 个文件！');
                 }
-                let noUrlSelectList = selectList.filter(v => !Boolean(v.downloadUrl))
+                let noUrlSelectList = selectedFiles.filter(v => !Boolean(v.downloadUrl))
                                 let queue = [];
                                 noUrlSelectList.forEach((item, index) => {
                                     queue.push(this.getRealLink(item.driveId, item.fileId));
@@ -1674,66 +2371,23 @@
                                 res.forEach((val, index) => {
                                     if (val && typeof val === 'string' && /^https?:/.test(val)) noUrlSelectList[index].downloadUrl = val;
                                 });
-                                let html = this.generateDom(selectList);
-                                                                                            base.showMainDialog(pan[mode][0], html, pan[mode][1]);
+                                let files = this.normalizeList(selectedFiles);
+            base.renderDownloadPanel(files, this);
                                                         },
-                                        generateDom(list) {
-            let content = '<div class="pl-main">';
-            list.forEach((v, i) => {
-                if (v.type === 'folder') return;
-                let filename = base.esc(v.name);
-                let ext = base.getExtension(v.name);
-                let fid = v.fileId;
-                let did = v.driveId;
-                let size = base.sizeFormat(v.size);
-                let dlink = v.downloadUrl;
-                                if (mode === 'api') {
-                                    content += `<div class="pl-item pl-row-api">
-                                                <div class="pl-item-name">${filename}</div>
-                                <a class="pl-item-link pl-a listener-link-api" title="点击进行浏览器下载" href="${base.esc(dlink)}" data-did="${did}" data-fid="${fid}" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}" data-index="${i}">${base.esc(dlink)}</a>
-                                <button class="pl-item-btn pl-btn-primary listener-idm" data-filename="${base.esc(filename)}" data-filesize="${v.size}" data-link="${base.esc(dlink)}" data-index="${i}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>IDM下载</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-api-btn" data-filename="${base.esc(filename)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制文件名</button>
-                                                </div>`;
-                                }
-                if (mode === 'aria') {
-                    let alink = this.convertLinkToAria(dlink, filename, navigator.userAgent);
-                    content += base.generateAriaRow(filename, dlink, alink, size);
-                }
-                if (mode === 'rpc') {
-                    content += base.generateRpcRow(filename, dlink, size);
-                }
-                if (mode === 'curl') {
-                    let curlCmd = this.convertLinkToCurl(dlink, filename, navigator.userAgent);
-                    content += base.generateCurlRow(filename, dlink, curlCmd, size);
-                }
-                if (mode === 'bc') {
-                    let bcCmd = this.convertLinkToBC(dlink, filename, navigator.userAgent);
-                    content += base.generateBCRow(filename, dlink, bcCmd, size);
-                }
-            });
-            content += '</div>';
-            if (mode === 'rpc') {
-                let rpc = base.getValue('setting_rpc_domain') + ':' + base.getValue('setting_rpc_port') + base.getValue('setting_rpc_path');
-                content += `<div class="pl-extra"><button class="pl-btn-primary listener-send-rpc"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>发送全部链接</button><button title="${rpc}" class="pl-btn-primary pl-btn-warning listener-open-setting" style="margin-left: 10px"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置 RPC 参数（当前为：${rpc}）</button></div>`;
-            }
-            return content;
+                                        normalizeList(list) {
+            return list.map(v => ({
+                filename: v.name || '',
+                sizeStr: base.sizeFormat(v.size),
+                rawSize: v.size || 0,
+                dlink: v.downloadUrl || '',
+                isFolder: v.type === 'folder',
+                raw: v,
+            }));
         },
         async sendLinkToRPC(filename, link) {
-            let rpc = {
-                domain: base.getValue('setting_rpc_domain'),
-                port: base.getValue('setting_rpc_port'),
-                path: base.getValue('setting_rpc_path'),
-                token: base.getValue('setting_rpc_token'),
-                dir: base.getValue('setting_rpc_dir'),
-            };
-            if (!base.validRpcDomain(rpc.domain)) {
-                message.error('RPC主机无效，仅允许本机或内网地址（如 http://127.0.0.1）');
-                return 'fail';
-            }
-            let url = `${rpc.domain}:${rpc.port}${rpc.path}`;
+            let rpc = base._rpcConfig();
+            if (!rpc) return 'fail';
+            let url = rpc.url;
                                                 // 阿里 CDN 看到非浏览器 UA 就 403，把它当成爬虫处理。
                         const UA = navigator.userAgent;
                         let rpcData = {
@@ -1749,18 +2403,17 @@
                         try {
                             let res = await base.post(url, rpcData, {}, '');
                 if (res.result) return 'success';
-                // can tell a bad token from a bad dir instead of a generic "失败".
-                message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
+                base.panelNotice('Aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
+                base.panelNotice('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
         getSelectedList() {
             try {
                 let selectedList = [];
-                let tableDom = document.querySelector(pan.dom.list);
+                let tableDom = document.querySelector(panInfo.dom.list);
                 if (tableDom) {
                                         // 表格视图里选中项挂在 props.selectedKeys 上。
                     let reactObj = base.findReact(tableDom, 1);
@@ -1780,7 +2433,7 @@
                 }
 
                                 // 网格视图（阿里现在默认渲染的视图）没有 selectedKeys，走 dataSource。
-                let gridDom = document.querySelector(pan.dom.grid);
+                let gridDom = document.querySelector(panInfo.dom.grid);
                 if (!gridDom) return [];
                 // 阿里网格视图的 React 树不需要往上找
                 let gridReact = base.findReact(gridDom, 0);
@@ -1806,17 +2459,17 @@
             return '';
         },
         isOnlyFolder() {
-            for (let i = 0; i < selectList.length; i++) {
-                if (selectList[i].type === 'file') return false;
+            for (let i = 0; i < selectedFiles.length; i++) {
+                if (selectedFiles[i].type === 'file') return false;
             }
             return true;
         },
         async initPanLinker() {
             base.initDefaultConfig();
             base.addPanLinkerStyle();
-            pt = this.detectPage();
-            pan = LOCAL_CONFIG.ali;
-            Object.freeze && Object.freeze(pan);
+            pageNum = this.detectPage();
+            panInfo = LOCAL_CONFIG.ali;
+            Object.freeze && Object.freeze(panInfo);
             this.addButton();
             base.createTip();
             base.registerMenuCommand();
@@ -1837,46 +2490,14 @@
             return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}"`);
         },
         addPageListener() {
-                    doc.on('click', '.pl-button-mode', async (e) => {
-                        mode = e.target.dataset.mode;
-                        Swal.showLoading();
-                        try {
-                            await this.getPCSLink();
-                        } catch (err) {
-                            Swal.close();
-                            message.error('获取下载链接失败：' + (err && err.message || '未知错误'));
-                        } finally {
-                            if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close();
-                        }
-                    });
-            doc.on('click', '.listener-link-api', async (e) => {
-                e.preventDefault();
-base.iframeDownload(e.currentTarget.dataset.link);
-            });
-            doc.on('click', '.listener-link-rpc', async (e) => {
-                let target = $(e.currentTarget);
-                target.find('.icon').remove();
-                target.find('.pl-loading').remove();
-                target.prepend(base.createLoading());
-                let res = await this.sendLinkToRPC(e.currentTarget.dataset.filename, e.currentTarget.dataset.link);
-                if (res === 'success') {
-                    target.removeClass('pl-btn-danger').html('发送成功，快去看看吧！').animate({opacity: '0.5'}, "slow");
-                } else {
-                    target.addClass('pl-btn-danger').text('发送失败，请检查您的RPC配置信息！').animate({opacity: '0.5'}, "slow");
-                }
-            });
-            doc.on('click', '.listener-send-rpc', (e) => {
-                $('.listener-link-rpc').click();
-                $(e.target).text('发送完成，发送结果见上方按钮！').animate({opacity: '0.5'}, "slow");
-            });
-            doc.on('click', '.listener-open-setting', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                base.showSetting();
+            doc.on('click', '.pl-button', async (e) => {
+                if ($(e.target).closest('.g-button-menu, .menu').length) return;
+                Swal.showLoading();
+                try { await this.getPCSLink(); } catch (err) { Swal.close(); base.renderErrorPanel('获取下载链接失败：' + (err && err.message || '未知错误'), this); } finally { if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close(); }
             });
         },
         _insertBeforeUpload(container, $button) {
-            // Use prepend to place button before all existing children (including 上传)
+            // 用 prepend 才能插在「上传」这类既有子节点之前
             if (container.firstChild) {
                 container.insertBefore($button[0], container.firstChild);
             } else {
@@ -1884,28 +2505,21 @@ base.iframeDownload(e.currentTarget.dataset.link);
             }
         },
         addButton() {
-            if (!pt) return;
+            if (!pageNum) return;
             let $toolWrap;
-            let $button = $(`<div class="tianyi-button pl-button">下载助手<ul class="pl-dropdown-menu" style="top: 26px;"><li class="pl-dropdown-menu-item pl-button-mode" data-mode="api">API下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="aria" >Aria下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="rpc">RPC下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="curl">cURL下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="bc" >BC下载</li><li class="pl-dropdown-menu-item listener-open-setting">助手设置</li></ul></div>`);
-            if (pt === 'home') {
-                            base.listenElement(pan.btn.home, () => {
-                                let container = document.querySelector(pan.btn.home);
+            let $button = $(`<div class="tianyi-button pl-button">下载助手</div>`);
+            if (pageNum === 'home') {
+                            base.listenElement(panInfo.btn.home, () => {
+                                let container = document.querySelector(panInfo.btn.home);
                                 if (container && $('.pl-button').length === 0) {
-                                    this._insertBeforeUpload(container, $button);
-                                                                        // 把下拉菜单按钮宽度对齐到下拉菜单本身。
-                                    setTimeout(() => {
-                                        const menu = $button.find('.pl-dropdown-menu');
-                                        if (menu.length) {
-                                            $button.css('width', menu.outerWidth() + 'px');
-                                        }
-                                    }, 100);
-                                }
+                                                    this._insertBeforeUpload(container, $button);
+                                                }
                             })
                         }
             this.addPageListener();
         },
         async getToken() {
-            let res = await base.getFinalUrl(pan.pcs[1], {});
+            let res = await base.getFinalUrl(panInfo.pcs[1], {});
             let accessToken = res.match(/accessToken=(\w+)/)?.[1];
             accessToken && base.setStorage('accessToken', accessToken);
             return accessToken;
@@ -1919,7 +2533,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 let time = Date.now(),
                     fileId = item.fileId,
                     o = "AccessToken=" + token + "&Timestamp=" + time + "&fileId=" + fileId,
-                    url = pan.pcs[2] + '?fileId=' + fileId;
+                    url = panInfo.pcs[2] + '?fileId=' + fileId;
                 let sign = md5(o).toString();
                 let res = await base.get(url, {
                     "accept": "application/json;charset=UTF-8",
@@ -1956,9 +2570,9 @@ base.iframeDownload(e.currentTarget.dataset.link);
             }
         },
         async getPCSLink() {
-                    selectList = this.getSelectedList();
-                    if (selectList.length === 0) {
-                        Swal.close(); return message.error('提示：请先勾选要下载的文件！');
+                    selectedFiles = this.getSelectedList();
+                    if (selectedFiles.length === 0) {
+                        Swal.close(); return base.renderDownloadPanel([], this);
                     }
                     if (this.isOnlyFolder()) {
                         Swal.close(); return message.error('提示：请打开文件夹后勾选文件！');
@@ -1968,74 +2582,30 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 Swal.close(); return message.error('提示：请先登录网盘！');
             }
             let queue = [];
-            selectList.forEach((item, index) => {
+            selectedFiles.forEach((item, index) => {
                 queue.push(this.getFileUrlByOnce(item, index, token));
             });
             const res = await Promise.all(queue);
             res.forEach(val => {
-                selectList[val.index].downloadUrl = val.downloadUrl;
+                selectedFiles[val.index].downloadUrl = val.downloadUrl;
             });
-            let html = this.generateDom(selectList);
-            base.showMainDialog(pan[mode][0], html, pan[mode][1]);
+            let files = this.normalizeList(selectedFiles);
+            base.renderDownloadPanel(files, this);
         },
-        generateDom(list) {
-            let content = '<div class="pl-main">';
-            list.forEach((v, i) => {
-                if (v.isFolder) return;
-                let filename = base.esc(v.fileName);
-                let size = base.sizeFormat(v.size);
-                let dlink = v.downloadUrl;
-                if (!/^https?:\/\//.test(dlink)) {
-                    content += `<div class="pl-item"><div class="pl-item-name">${filename}</div><span class="pl-item-link pl-a" style="color:#cc3235">${base.esc(dlink)}</span></div>`;
-                    return;
-                }
-                if (mode === 'api') {
-                    content += `<div class="pl-item pl-row-api">
-                                <div class="pl-item-name">${filename}</div>
-                                <a class="pl-item-link listener-link-api" title="点击进行浏览器下载" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}" data-index="${i}">${base.esc(dlink)}</a>
-                                <button class="pl-item-btn pl-btn-primary listener-idm" data-filename="${base.esc(filename)}" data-filesize="${v.size}" data-link="${base.esc(dlink)}" data-index="${i}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>IDM下载</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-api-btn" data-filename="${base.esc(filename)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制文件名</button>
-                                </div>`;
-                }
-                if (mode === 'aria') {
-                    let alink = this.convertLinkToAria(dlink, filename, navigator.userAgent);
-                    content += base.generateAriaRow(filename, dlink, alink, size);
-                }
-                if (mode === 'rpc') {
-                    content += base.generateRpcRow(filename, dlink, size);
-                }
-                if (mode === 'curl') {
-                    let curlCmd = this.convertLinkToCurl(dlink, filename, navigator.userAgent);
-                    content += base.generateCurlRow(filename, dlink, curlCmd, size);
-                }
-                if (mode === 'bc') {
-                    let bcCmd = this.convertLinkToBC(dlink, filename, navigator.userAgent);
-                    content += base.generateBCRow(filename, dlink, bcCmd, size);
-                }
-            });
-            content += '</div>';
-            if (mode === 'rpc') {
-                let rpc = base.getValue('setting_rpc_domain') + ':' + base.getValue('setting_rpc_port') + base.getValue('setting_rpc_path');
-                content += `<div class="pl-extra"><button class="pl-btn-primary listener-send-rpc"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>发送全部链接</button><button title="${rpc}" class="pl-btn-primary pl-btn-warning listener-open-setting" style="margin-left: 10px"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置 RPC 参数（当前为：${rpc}）</button></div>`;
-            }
-            return content;
+        normalizeList(list) {
+            return list.map(v => ({
+                filename: v.fileName || '',
+                sizeStr: base.sizeFormat(v.size),
+                rawSize: v.size || 0,
+                dlink: v.downloadUrl && /^https?:\/\//.test(v.downloadUrl) ? v.downloadUrl : '',
+                isFolder: !!v.isFolder,
+                raw: v,
+            }));
         },
         async sendLinkToRPC(filename, link) {
-            let rpc = {
-                domain: base.getValue('setting_rpc_domain'),
-                port: base.getValue('setting_rpc_port'),
-                path: base.getValue('setting_rpc_path'),
-                token: base.getValue('setting_rpc_token'),
-                dir: base.getValue('setting_rpc_dir'),
-            };
-            if (!base.validRpcDomain(rpc.domain)) {
-                message.error('RPC主机无效，仅允许本机或内网地址（如 http://127.0.0.1）');
-                return 'fail';
-            }
-            let url = `${rpc.domain}:${rpc.port}${rpc.path}`;
+            let rpc = base._rpcConfig();
+            if (!rpc) return 'fail';
+            let url = rpc.url;
             let rpcData = {
                 id: new Date().getTime(),
                 jsonrpc: '2.0',
@@ -2049,11 +2619,10 @@ base.iframeDownload(e.currentTarget.dataset.link);
             try {
                 let res = await base.post(url, rpcData, {}, '');
                 if (res.result) return 'success';
-                // can tell a bad token from a bad dir instead of a generic "失败".
-                message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
+                base.panelNotice('Aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
+                base.panelNotice('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
@@ -2071,17 +2640,17 @@ base.iframeDownload(e.currentTarget.dataset.link);
             return '';
         },
         isOnlyFolder() {
-            for (let i = 0; i < selectList.length; i++) {
-                if (!selectList[i].isFolder) return false;
+            for (let i = 0; i < selectedFiles.length; i++) {
+                if (!selectedFiles[i].isFolder) return false;
             }
             return true;
         },
         async initPanLinker() {
             base.initDefaultConfig();
             base.addPanLinkerStyle();
-            pt = this.detectPage();
-            pan = LOCAL_CONFIG.tianyi;
-            Object.freeze && Object.freeze(pan);
+            pageNum = this.detectPage();
+            panInfo = LOCAL_CONFIG.tianyi;
+            Object.freeze && Object.freeze(panInfo);
             this.addButton();
             this.getToken();
             base.createTip();
@@ -2103,7 +2672,8 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 let v = base.getCookie(k);
                 if (v) parts.push(`${k}=${v}`);
             }
-            return parts.join('; ');
+            // 这串会拼进 aria2c/curl 命令，cookie 值里的引号会截断命令，先滤掉
+            return parts.join('; ').replace(/[\\"`$]/g, '');
         },
         convertLinkToAria(link, filename, ua) {
             filename = base.fixFilename(filename);
@@ -2114,8 +2684,11 @@ base.iframeDownload(e.currentTarget.dataset.link);
             return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 1 -s 1${cookieStr}${uaStr}`);
         },
         convertLinkToBC(link, filename, ua) {
-            let bc = `AA/${encodeURIComponent(filename)}/?url=${encodeURIComponent(link)}ZZ`;
-            return encodeURIComponent(`bc://http/${base.e(bc)}`);
+            // 迅雷 CDN 认 cookie + UA，缺一个就断连（与 aria2/curl 两条路用的是同一套头）
+            return base._bc(link, filename, {
+                'Cookie': this._getAuthCookie(),
+                'User-Agent': ua || navigator.userAgent,
+            });
         },
         convertLinkToCurl(link, filename, ua) {
             let terminal = base.getValue('setting_terminal_type');
@@ -2125,59 +2698,15 @@ base.iframeDownload(e.currentTarget.dataset.link);
             return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}"${cookieStr} -H "User-Agent: ${navigator.userAgent}"`);
         },
         addPageListener() {
-                    doc.on('click', '.pl-button-mode', async (e) => {
-                        mode = e.target.dataset.mode;
-                        Swal.showLoading();
-                        try {
-                            await this.getPCSLink();
-                        } catch (err) {
-                            Swal.close();
-                            message.error('获取下载链接失败：' + (err && err.message || '未知错误'));
-                        } finally {
-                            if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close();
-                        }
-                    });
-            doc.on('click', '.listener-link-api', async (e) => {
-                e.preventDefault();
-base.iframeDownload(e.currentTarget.dataset.link);
-            });
-            doc.on('click', '.listener-link-media', async (e) => {
-                e.preventDefault();
-base.iframeDownload(e.currentTarget.dataset.link);
-                $(e.currentTarget).text('已触发下载，若未弹出请检查浏览器下载设置').animate({opacity: '0.5'}, "slow");
-            });
-
-
-            doc.on('click', '.listener-link-bc-btn', async (e) => {
-                let mirror = base.getMirrorList(e.target.dataset.dlink, pan.mirror);
-                base.setClipboard(mirror);
-                $(e.target).text('复制成功').animate({opacity: '0.5'}, "slow");
-            });
-            doc.on('click', '.listener-link-rpc', async (e) => {
-                let target = $(e.currentTarget);
-                target.find('.icon').remove();
-                target.find('.pl-loading').remove();
-                target.prepend(base.createLoading());
-                let res = await this.sendLinkToRPC(e.currentTarget.dataset.filename, e.currentTarget.dataset.link);
-                if (res === 'success') {
-                    target.removeClass('pl-btn-danger').html('发送成功，快去看看吧！').animate({opacity: '0.5'}, "slow");
-                } else {
-                    target.addClass('pl-btn-danger').text('发送失败，请检查您的RPC配置信息！').animate({opacity: '0.5'}, "slow");
-                }
-            });
-            doc.on('click', '.listener-send-rpc', (e) => {
-                $('.listener-link-rpc').click();
-                $(e.target).text('发送完成，发送结果见上方按钮！').animate({opacity: '0.5'}, "slow");
-            });
-            doc.on('click', '.listener-open-setting', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                base.showSetting();
+            doc.on('click', '.pl-button', async (e) => {
+                if ($(e.target).closest('.g-button-menu, .menu').length) return;
+                Swal.showLoading();
+                try { await this.getPCSLink(); } catch (err) { Swal.close(); base.renderErrorPanel('获取下载链接失败：' + (err && err.message || '未知错误'), this); } finally { if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close(); }
             });
         },
         _findHomeContainer() {
-            if (pan.btn && pan.btn.home) {
-                let el = document.querySelector(pan.btn.home);
+            if (panInfo.btn && panInfo.btn.home) {
+                let el = document.querySelector(panInfo.btn.home);
                 if (el) return el;
             }
             for (let sel of this._homeSelectors) {
@@ -2187,10 +2716,10 @@ base.iframeDownload(e.currentTarget.dataset.link);
             return null;
         },
         addButton() {
-            if (!pt) return;
+            if (!pageNum) return;
             let $toolWrap;
-            let $button = $(`<div class="xunlei-button pl-button"><i class="xlpfont xlp-download"></i><span style="font-size: 13px;margin-left: 6px;">下载助手</span><ul class="pl-dropdown-menu" style="top: 34px;"><li class="pl-dropdown-menu-item pl-button-mode" data-mode="api">API下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="aria" >Aria下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="rpc">RPC下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="curl">cURL下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="bc" >BC下载</li><li class="pl-dropdown-menu-item listener-open-setting">助手设置</li></ul></div>`);
-            if (pt === 'home') {
+            let $button = $(`<div class="xunlei-button pl-button"><i class="xlpfont xlp-download"></i><span style="font-size: 13px;margin-left: 6px;">下载助手</span></div>`);
+            if (pageNum === 'home') {
                 this._smartListen(() => {
                     let container = this._findHomeContainer();
                     if (container && $('.pl-button').length === 0) {
@@ -2276,7 +2805,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 if (token.captcha && token.captcha.token) {
                     headers['x-captcha-token'] = token.captcha.token;
                 }
-                let res = await base.get(pan.pcs[0] + item.id, headers);
+                let res = await base.get(panInfo.pcs[0] + item.id, headers);
                 if (res.web_content_link) {
                     let mediaLink = '';
                     if (Array.isArray(res.medias) && res.medias.length > 0) {
@@ -2309,26 +2838,26 @@ base.iframeDownload(e.currentTarget.dataset.link);
             }
         },
         async getPCSLink() {
-                    selectList = this.getSelectedList();
-                    if (selectList.length === 0) {
-                        Swal.close(); return message.error('提示：请先勾选要下载的文件！');
+                    selectedFiles = this.getSelectedList();
+                    if (selectedFiles.length === 0) {
+                        Swal.close(); return base.renderDownloadPanel([], this);
                     }
                     if (this.isOnlyFolder()) {
                         Swal.close(); return message.error('提示：请打开文件夹后勾选文件！');
                     }
-            if (pt === 'home') {
+            if (pageNum === 'home') {
                 let queue = [];
                 let token = this.getToken();
                 if (!token.credentials || !token.credentials.access_token) {
                     return message.error('提示：登录凭证获取失败，请先登录网盘后刷新页面！');
                 }
-                selectList.forEach((item, index) => {
+                selectedFiles.forEach((item, index) => {
                     queue.push(this.getFileUrlByOnce(item, index, token));
                 });
                 const res = await Promise.all(queue);
                 res.forEach(val => {
-                    selectList[val.index].downloadUrl = val.downloadUrl;
-                    if (val.mediaLink) selectList[val.index].mediaLink = val.mediaLink;
+                    selectedFiles[val.index].downloadUrl = val.downloadUrl;
+                    if (val.mediaLink) selectedFiles[val.index].mediaLink = val.mediaLink;
                 });
             } else {
                 let dialog = await Swal.fire({
@@ -2345,68 +2874,23 @@ base.iframeDownload(e.currentTarget.dataset.link);
                     return;
                 }
             }
-            let html = this.generateDom(selectList);
-            base.showMainDialog(pan[mode][0], html, pan[mode][1]);
+            let files = this.normalizeList(selectedFiles);
+            base.renderDownloadPanel(files, this);
         },
-        generateDom(list) {
-            let content = '<div class="pl-main">';
-            list.forEach((v, i) => {
-                if (v.kind === 'drive#folder') return;
-                let filename = base.esc(v.name);
-                let size = base.sizeFormat(+v.size);
-                let dlink = v.downloadUrl;
-                if (!/^https?:\/\//.test(dlink)) {
-                    content += `<div class="pl-item"><div class="pl-item-name">${filename}</div><span class="pl-item-link pl-a" style="color:#cc3235">${base.esc(dlink)}</span></div>`;
-                    return;
-                }
-                if (mode === 'api') {
-                    content += `<div class="pl-item pl-row-api">
-                                    <div class="pl-item-name">${filename}</div>
-                                    <a class="pl-item-link listener-link-api" title="点击进行浏览器下载" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}" data-index="${i}">${base.esc(dlink)}</a>
-                                    <button class="pl-item-btn pl-btn-primary listener-idm" data-filename="${base.esc(filename)}" data-filesize="${+v.size}" data-link="${base.esc(dlink)}" data-index="${i}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>IDM下载</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-api-btn" data-filename="${base.esc(filename)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制文件名</button>
-                                    ${v.mediaLink ? `<button class="pl-item-link listener-link-media pl-btn-primary" data-filename="${base.esc(filename)}" data-link="${base.esc(v.mediaLink)}" data-index="${i}">云播转码下载(更小更快)</button>` : ''}
-                                    </div>`;
-                }
-                if (mode === 'aria') {
-                    let alink = this.convertLinkToAria(dlink, filename, navigator.userAgent);
-                    content += base.generateAriaRow(filename, dlink, alink, size);
-                }
-                if (mode === 'rpc') {
-                    content += base.generateRpcRow(filename, dlink, size);
-                }
-                if (mode === 'curl') {
-                    let curlCmd = this.convertLinkToCurl(dlink, filename, navigator.userAgent);
-                    content += base.generateCurlRow(filename, dlink, curlCmd, size);
-                }
-                if (mode === 'bc') {
-                    let bcCmd = this.convertLinkToBC(dlink, filename, navigator.userAgent);
-                    content += base.generateBCRow(filename, dlink, bcCmd, size, `<div class="pl-item-btn listener-link-bc-btn" data-dlink="${dlink}">复制镜像地址</div>`);
-                }
-            });
-            content += '</div>';
-            if (mode === 'rpc') {
-                let rpc = base.getValue('setting_rpc_domain') + ':' + base.getValue('setting_rpc_port') + base.getValue('setting_rpc_path');
-                content += `<div class="pl-extra"><button class="pl-btn-primary listener-send-rpc"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>发送全部链接</button><button title="${rpc}" class="pl-btn-primary pl-btn-warning listener-open-setting" style="margin-left: 10px"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置 RPC 参数（当前为：${rpc}）</button></div>`;
-            }
-            return content;
+        normalizeList(list) {
+            return list.map(v => ({
+                filename: v.name || '',
+                sizeStr: base.sizeFormat(+v.size),
+                rawSize: +v.size || 0,
+                dlink: v.downloadUrl && /^https?:\/\//.test(v.downloadUrl) ? v.downloadUrl : '',
+                isFolder: v.kind === 'drive#folder',
+                raw: v,
+            }));
         },
         async sendLinkToRPC(filename, link) {
-            let rpc = {
-                domain: base.getValue('setting_rpc_domain'),
-                port: base.getValue('setting_rpc_port'),
-                path: base.getValue('setting_rpc_path'),
-                token: base.getValue('setting_rpc_token'),
-                dir: base.getValue('setting_rpc_dir'),
-            };
-            if (!base.validRpcDomain(rpc.domain)) {
-                message.error('RPC主机无效，仅允许本机或内网地址（如 http://127.0.0.1）');
-                return 'fail';
-            }
-            let url = `${rpc.domain}:${rpc.port}${rpc.path}`;
+            let rpc = base._rpcConfig();
+            if (!rpc) return 'fail';
+            let url = rpc.url;
             let authCookie = this._getAuthCookie ? this._getAuthCookie() : '';
             // cookie 和 UA 缺一个，CDN 都会直接断连
             let rpcHeader = authCookie
@@ -2425,11 +2909,10 @@ base.iframeDownload(e.currentTarget.dataset.link);
             try {
                 let res = await base.post(url, rpcData, {}, '');
                 if (res.result) return 'success';
-                // can tell a bad token from a bad dir instead of a generic "失败".
-                message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
+                base.panelNotice('Aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
+                base.panelNotice('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
@@ -2495,17 +2978,17 @@ base.iframeDownload(e.currentTarget.dataset.link);
             return '';
         },
         isOnlyFolder() {
-            for (let i = 0; i < selectList.length; i++) {
-                if (selectList[i].kind === 'drive#file') return false;
+            for (let i = 0; i < selectedFiles.length; i++) {
+                if (selectedFiles[i].kind === 'drive#file') return false;
             }
             return true;
         },
         async initPanLinker() {
             base.initDefaultConfig();
             base.addPanLinkerStyle();
-            pt = this.detectPage();
-            pan = LOCAL_CONFIG.xunlei;
-            Object.freeze && Object.freeze(pan);
+            pageNum = this.detectPage();
+            panInfo = LOCAL_CONFIG.xunlei;
+            Object.freeze && Object.freeze(panInfo);
             this.addButton();
             base.createTip();
             base.registerMenuCommand();
@@ -2514,20 +2997,22 @@ base.iframeDownload(e.currentTarget.dataset.link);
     let quark = {
         convertLinkToAria(link, filename, ua) {
             filename = base.fixFilename(filename);
-            return encodeURIComponent(`aria2c "${link}" --out "${filename}" --header "User-Agent: ${pan.ua}" --header "Cookie: ${String(document.cookie).replace(/[\\"`$]/g, '')}"`);
+            return encodeURIComponent(`aria2c "${link}" --out "${filename}" --header "User-Agent: ${panInfo.ua}" --header "Cookie: ${String(document.cookie).replace(/[\\"`$]/g, '')}"`);
         },
         convertLinkToBC(link, filename, ua) {
-                        // 跟 convertLinkToCurl 一样的思路——cookie 只 scope 到夸克 CDN 需要的部分，
-                        // 别把整个 jar 一股脑塞进可分享的链接里。
-            const ck = base.getCookie('__pus') || base.getCookie('__puus') || '';
-            let bc = `AA/${encodeURIComponent(filename)}/?url=${encodeURIComponent(link)}&cookie=${encodeURIComponent(ck)}ZZ`;
-            return encodeURIComponent(`bc://http/${base.e(bc)}`);
+                        // 只带 __pus/__puus 时 CDN 回 412「需要登录」，得给完整 jar；
+                        // 与 aria2/RPC 那条能用的路径保持同一套头。
+            return base._bc(link, filename, {
+                'Referer': `${location.origin}/`,
+                'User-Agent': ua || navigator.userAgent,
+                'Cookie': String(document.cookie),
+            });
         },
         convertLinkToCurl(link, filename, ua) {
             let terminal = base.getValue('setting_terminal_type');
             filename = base.fixFilename(filename);
-                        // 之前这段代码会把整个 document.cookie 内联到命令行里，相当于泄露了所有会话。
-            return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}" -A "${pan.ua}" -b "${String(document.cookie).replace(/[\\"`$]/g, '')}"`);
+                        // cookie 要进 shell 命令，先滤掉引号/反引号/$：既防命令被截断，也堵注入
+            return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}" -A "${panInfo.ua}" -b "${String(document.cookie).replace(/[\\"`$]/g, '')}"`);
         },
         addPageListener() {
             if (this._listenerBound) return;
@@ -2539,51 +3024,19 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 if ($('.quark-button').length > 0) return;
                 this.addButton();
             });
-            doc.on('click', '.pl-button-mode', async (e) => {
-                            mode = e.target.dataset.mode;
-                            Swal.showLoading();
-                            try {
-                                await this.getPCSLink();
-                            } catch (err) {
-                                Swal.close();
-                                message.error('获取下载链接失败：' + (err && err.message || '未知错误'));
-                            } finally {
-                                if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close();
-                            }
-                        });
-            doc.on('click', '.listener-link-api', async (e) => {
-                e.preventDefault();
-base.iframeDownload(e.currentTarget.dataset.link);
-            });
-            doc.on('click', '.listener-link-rpc', async (e) => {
-                let target = $(e.currentTarget);
-                target.find('.icon').remove();
-                target.find('.pl-loading').remove();
-                target.prepend(base.createLoading());
-                let res = await this.sendLinkToRPC(e.currentTarget.dataset.filename, e.currentTarget.dataset.link);
-                if (res === 'success') {
-                    target.removeClass('pl-btn-danger').html('发送成功，快去看看吧！').animate({opacity: '0.5'}, "slow");
-                } else {
-                    target.addClass('pl-btn-danger').text('发送失败，请检查您的RPC配置信息！').animate({opacity: '0.5'}, "slow");
-                }
-            });
-            doc.on('click', '.listener-send-rpc', (e) => {
-                $('.listener-link-rpc').click();
-                $(e.target).text('发送完成，发送结果见上方按钮！').animate({opacity: '0.5'}, "slow");
-            });
-            doc.on('click', '.listener-open-setting', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                base.showSetting();
+            doc.on('click', '.pl-button', async (e) => {
+                if ($(e.target).closest('.g-button-menu, .menu').length) return;
+                Swal.showLoading();
+                try { await this.getPCSLink(); } catch (err) { Swal.close(); base.renderErrorPanel('获取下载链接失败：' + (err && err.message || '未知错误'), this); } finally { if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close(); }
             });
         },
         addButton() {
-            if (!pt) return;
+            if (!pageNum) return;
             let $toolWrap;
-            let $button = $(`<div class="quark-button pl-button"><svg width="22" height="22" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd" stroke="#555" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 2-2z"/><path d="M14 8h1.553c.85 0 1.16.093 1.47.267.311.174.556.43.722.756.166.326.255.65.255 1.54v4.873c0 .892-.089 1.215-.255 1.54-.166.327-.41.583-.722.757-.31.174-.62.267-1.47.267H6.447c-.85 0-1.16-.093-1.47-.267a1.778 1.778 0 01-.722-.756c-.166-.326-.255-.65-.255-1.54v-4.873c0-.892.089-1.215.255-1.54.166-.327.41-.583.722-.757.31-.174.62-.267 1.47-.267H11"/><path stroke-linecap="round" stroke-linejoin="round" d="M11 3v10"/></g></svg><b>下载助手</b><ul class="pl-dropdown-menu"><li class="pl-dropdown-menu-item pl-button-mode" data-mode="api">API下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="aria" >Aria下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="rpc">RPC下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="curl">cURL下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="bc" >BC下载</li><li class="pl-dropdown-menu-item listener-open-setting">助手设置</li></ul></div>`);
-            if (pt === 'home') {
-                base.listenElement(pan.btn.home, () => {
-                    $toolWrap = $(pan.btn.home);
+            let $button = $(`<div class="quark-button pl-button"><svg width="22" height="22" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd" stroke="#555" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 2-2z"/><path d="M14 8h1.553c.85 0 1.16.093 1.47.267.311.174.556.43.722.756.166.326.255.65.255 1.54v4.873c0 .892-.089 1.215-.255 1.54-.166.327-.41.583-.722.757-.31.174-.62.267-1.47.267H6.447c-.85 0-1.16-.093-1.47-.267a1.778 1.778 0 01-.722-.756c-.166-.326-.255-.65-.255-1.54v-4.873c0-.892.089-1.215.255-1.54.166-.327.41-.583.722-.757.31-.174.62-.267 1.47-.267H11"/><path stroke-linecap="round" stroke-linejoin="round" d="M11 3v10"/></g></svg><b>下载助手</b></div>`);
+            if (pageNum === 'home') {
+                base.listenElement(panInfo.btn.home, () => {
+                    $toolWrap = $(panInfo.btn.home);
                     $('.pl-button').length === 0 && $toolWrap.prepend($button);
                 });
             }
@@ -2600,11 +3053,11 @@ base.iframeDownload(e.currentTarget.dataset.link);
             }
             const time = Math.floor(now / 1e3);
             try {
-                let res = await base.post(pan.pcs[1], {
+                let res = await base.post(panInfo.pcs[1], {
                     "conversation_id": "300000" + time,
                     "conversation_type": 3,
                     "msg_id": time + "000"
-                }, {"content-type": "application/json;charset=utf-8", "Cookie": String(document.cookie), "User-Agent": pan.ua});
+                }, {"content-type": "application/json;charset=utf-8", "Cookie": String(document.cookie), "User-Agent": panInfo.ua});
                 if (res && res.code === 0 && res.data && res.data.token) {
                     base.setValue('quark_accel_token', res.data);
                     return res.data.token;
@@ -2613,32 +3066,32 @@ base.iframeDownload(e.currentTarget.dataset.link);
             return '';
         },
         async getPCSLink() {
-                    selectList = this.getSelectedList();
-                    if (selectList.length === 0) {
-                        Swal.close(); return message.error('提示：请先勾选要下载的文件！');
+                    selectedFiles = this.getSelectedList();
+                    if (selectedFiles.length === 0) {
+                        Swal.close(); return base.renderDownloadPanel([], this);
                     }
                     if (this.isOnlyFolder()) {
                         Swal.close(); return message.error('提示：请打开文件夹后勾选文件！');
                     }
             let fids = [];
-            selectList.forEach(val => {
+            selectedFiles.forEach(val => {
                 fids.push(val.fid);
             });
-            if (pt === 'home') {
+            if (pageNum === 'home') {
                 let token = await this.getAccelToken();
-                let res = await base.post(pan.pcs[0], {
+                let res = await base.post(panInfo.pcs[0], {
                     "fids": fids,
                     "speedup_session": "",
                     "token": token
-                }, {"content-type": "application/json;charset=utf-8", "Cookie": String(document.cookie), "user-agent": pan.ua});
+                }, {"content-type": "application/json;charset=utf-8", "Cookie": String(document.cookie), "user-agent": panInfo.ua});
                 if (res.code === 31001) {
                     Swal.close(); return message.error('提示：请先登录网盘！');
                 }
                 if (res.code !== 0) {
                                     return message.error('提示：获取链接失败！');
                                 }
-                                let html = this.generateDom(res.data);
-            base.showMainDialog(pan[mode][0], html, pan[mode][1]);
+                                let files = this.normalizeList(res.data);
+            base.renderDownloadPanel(files, this);
                             } else {
                 let dialog = await Swal.fire({
                     toast: true,
@@ -2655,61 +3108,20 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 }
             }
         },
-        generateDom(list) {
-            let content = '<div class="pl-main">';
-            list.forEach((v, i) => {
-                if (v.file === false) return;
-                let filename = base.esc(v.file_name);
-                let fid = v.fid;
-                let size = base.sizeFormat(v.size);
-                let dlink = v.download_url;
-                if (mode === 'api') {
-                    content += `<div class="pl-item pl-row-api">
-                                <div class="pl-item-name">${filename}</div>
-                                <a class="pl-item-link listener-link-api" title="点击进行浏览器下载" data-fid="${fid}" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}" data-index="${i}">${base.esc(dlink)}</a>
-                                <button class="pl-item-btn pl-btn-primary listener-idm" data-filename="${base.esc(filename)}" data-filesize="${v.size}" data-link="${base.esc(dlink)}" data-index="${i}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>IDM下载</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-api-btn" data-filename="${base.esc(filename)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制文件名</button>
-                                </div>`;
-                }
-                if (mode === 'aria') {
-                    let alink = this.convertLinkToAria(dlink, filename, navigator.userAgent);
-                    content += base.generateAriaRow(filename, dlink, alink, size);
-                }
-                if (mode === 'rpc') {
-                    content += base.generateRpcRow(filename, dlink, size);
-                }
-                if (mode === 'curl') {
-                    let curlCmd = this.convertLinkToCurl(dlink, filename, navigator.userAgent);
-                    content += base.generateCurlRow(filename, dlink, curlCmd, size);
-                }
-                if (mode === 'bc') {
-                    let bcCmd = this.convertLinkToBC(dlink, filename, navigator.userAgent);
-                    content += base.generateBCRow(filename, dlink, bcCmd, size);
-                }
-            });
-            content += '</div>';
-            if (mode === 'rpc') {
-                let rpc = base.getValue('setting_rpc_domain') + ':' + base.getValue('setting_rpc_port') + base.getValue('setting_rpc_path');
-                content += `<div class="pl-extra"><button class="pl-btn-primary listener-send-rpc"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>发送全部链接</button><button title="${rpc}" class="pl-btn-primary pl-btn-warning listener-open-setting" style="margin-left: 10px"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置 RPC 参数（当前为：${rpc}）</button></div>`;
-            }
-            return content;
+        normalizeList(list) {
+            return list.map(v => ({
+                filename: v.file_name || '',
+                sizeStr: base.sizeFormat(v.size),
+                rawSize: v.size || 0,
+                dlink: v.download_url || '',
+                isFolder: v.file === false,
+                raw: v,
+            }));
         },
         async sendLinkToRPC(filename, link) {
-            let rpc = {
-                domain: base.getValue('setting_rpc_domain'),
-                port: base.getValue('setting_rpc_port'),
-                path: base.getValue('setting_rpc_path'),
-                token: base.getValue('setting_rpc_token'),
-                dir: base.getValue('setting_rpc_dir'),
-            };
-            if (!base.validRpcDomain(rpc.domain)) {
-                message.error('RPC主机无效，仅允许本机或内网地址（如 http://127.0.0.1）');
-                return 'fail';
-            }
-            let url = `${rpc.domain}:${rpc.port}${rpc.path}`;
+            let rpc = base._rpcConfig();
+            if (!rpc) return 'fail';
+            let url = rpc.url;
             let rpcData = {
                 id: new Date().getTime(),
                 jsonrpc: '2.0',
@@ -2717,19 +3129,18 @@ base.iframeDownload(e.currentTarget.dataset.link);
                 params: [`token:${rpc.token}`, [link], {
                     dir: rpc.dir,
                     out: base.safeRpcFilename(filename),
-                    header: [`User-Agent: ${pan.ua}`, `Cookie: ${String(document.cookie)}`],
-                    'user-agent': pan.ua,
+                    header: [`User-Agent: ${panInfo.ua}`, `Cookie: ${String(document.cookie)}`],
+                    'user-agent': panInfo.ua,
                     'referer': `${location.origin}/`
                 }]
             };
             try {
                 let res = await base.post(url, rpcData, {}, '');
                 if (res.result) return 'success';
-                // can tell a bad token from a bad dir instead of a generic "失败".
-                message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
+                base.panelNotice('Aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
+                base.panelNotice('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
@@ -2761,17 +3172,17 @@ base.iframeDownload(e.currentTarget.dataset.link);
             return '';
         },
         isOnlyFolder() {
-            for (let i = 0; i < selectList.length; i++) {
-                if (selectList[i].file) return false;
+            for (let i = 0; i < selectedFiles.length; i++) {
+                if (selectedFiles[i].file) return false;
             }
             return true;
         },
         async initPanLinker() {
             base.initDefaultConfig();
             base.addPanLinkerStyle();
-            pt = this.detectPage();
-            pan = LOCAL_CONFIG.quark;
-            Object.freeze && Object.freeze(pan);
+            pageNum = this.detectPage();
+            panInfo = LOCAL_CONFIG.quark;
+            Object.freeze && Object.freeze(panInfo);
             this.addButton();
             this.addPageListener();
             base.createTip();
@@ -2793,51 +3204,19 @@ base.iframeDownload(e.currentTarget.dataset.link);
             return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}"`);
         },
         addPageListener() {
-                    doc.on('click', '.pl-button-mode', async (e) => {
-                        mode = e.target.dataset.mode;
-                        Swal.showLoading();
-                        try {
-                            await this.getPCSLink();
-                        } catch (err) {
-                            Swal.close();
-                            message.error('获取下载链接失败：' + (err && err.message || '未知错误'));
-                        } finally {
-                            if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close();
-                        }
-                    });
-            doc.on('click', '.listener-link-api', async (e) => {
-                e.preventDefault();
-base.iframeDownload(e.currentTarget.dataset.link);
-            });
-            doc.on('click', '.listener-link-rpc', async (e) => {
-                let target = $(e.currentTarget);
-                target.find('.icon').remove();
-                target.find('.pl-loading').remove();
-                target.prepend(base.createLoading());
-                let res = await this.sendLinkToRPC(e.currentTarget.dataset.filename, e.currentTarget.dataset.link);
-                if (res === 'success') {
-                    target.removeClass('pl-btn-danger').html('发送成功，快去看看吧！').animate({opacity: '0.5'}, "slow");
-                } else {
-                    target.addClass('pl-btn-danger').text('发送失败，请检查您的RPC配置信息！').animate({opacity: '0.5'}, "slow");
-                }
-            });
-            doc.on('click', '.listener-send-rpc', (e) => {
-                $('.listener-link-rpc').click();
-                $(e.target).text('发送完成，发送结果见上方按钮！').animate({opacity: '0.5'}, "slow");
-            });
-            doc.on('click', '.listener-open-setting', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                base.showSetting();
+            doc.on('click', '.pl-button', async (e) => {
+                if ($(e.target).closest('.g-button-menu, .menu').length) return;
+                Swal.showLoading();
+                try { await this.getPCSLink(); } catch (err) { Swal.close(); base.renderErrorPanel('获取下载链接失败：' + (err && err.message || '未知错误'), this); } finally { if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close(); }
             });
         },
         addButton() {
-            if (!pt) return;
+            if (!pageNum) return;
             let $toolWrap;
-            let $button = $(`<div class="yidong-button pl-button">下载助手<ul class="pl-dropdown-menu" style="top: 36px;"><li class="pl-dropdown-menu-item pl-button-mode" data-mode="api">API下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="aria" >Aria下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="rpc">RPC下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="curl">cURL下载</li><li class="pl-dropdown-menu-item pl-button-mode" data-mode="bc" >BC下载</li><li class="pl-dropdown-menu-item listener-open-setting">助手设置</li></ul></div>`);
-            if (pt === 'home') {
-                base.listenElement(pan.btn.home, () => {
-                    $toolWrap = $(pan.btn.home);
+            let $button = $(`<div class="yidong-button pl-button">下载助手</div>`);
+            if (pageNum === 'home') {
+                base.listenElement(panInfo.btn.home, () => {
+                    $toolWrap = $(panInfo.btn.home);
                     $('.pl-button').length === 0 && $toolWrap.prepend($button);
                 })
             }
@@ -2856,7 +3235,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
                     let time = new Date(+new Date() + 8 * 3600 * 1000).toJSON().substr(0, 19).replace('T', ' ');
                     let key = base.getRandomString(16);
                     let sign = base.getSign(undefined, body, time, key);
-                    let res = await base.post(pan.pcs[0], body, {
+                    let res = await base.post(panInfo.pcs[0], body, {
                         'authorization': base.getCookie('authorization'),
                         'caller': 'web',
                         'content-type': "application/json;charset=UTF-8",
@@ -2891,7 +3270,7 @@ base.iframeDownload(e.currentTarget.dataset.link);
                         };
                     }
                 }
-                let res = await base.post(pan.pcs[1], `linkId=${vueDom.linkID}&contentIds=${encodeURIComponent(item.path)}&catalogIds=`, {
+                let res = await base.post(panInfo.pcs[1], `linkId=${vueDom.linkID}&contentIds=${encodeURIComponent(item.path)}&catalogIds=`, {
                         'Content-Type': 'application/x-www-form-urlencoded',
                     });
                     if (res.code === 0) {
@@ -2913,86 +3292,42 @@ base.iframeDownload(e.currentTarget.dataset.link);
             }
         },
         async getPCSLink() {
-            selectList = this.getSelectedList();
-            if (selectList.length === 0) {
-                Swal.close(); return message.error('提示：请先勾选要下载的文件！');
+            selectedFiles = this.getSelectedList();
+            if (selectedFiles.length === 0) {
+                Swal.close(); return base.renderDownloadPanel([], this);
             }
             if (this.isOnlyFolder()) {
                 return message.error('提示：勾选的全是文件夹，脚本仅支持下载文件，请打开文件夹后勾选文件！');
             }
-            selectList = selectList.filter(v => v && v.contentID);
-            if (selectList.length === 0) {
+            selectedFiles = selectedFiles.filter(v => v && v.contentID);
+            if (selectedFiles.length === 0) {
                 return message.error('提示：未获取到文件标识，请刷新页面后重试！');
             }
             let queue = [];
-            selectList.forEach((item, index) => {
+            selectedFiles.forEach((item, index) => {
                 queue.push(this.getFileUrlByOnce(item, index));
             });
             const res = await Promise.all(queue);
             res.forEach(val => {
-                selectList[val.index].downloadUrl = val.downloadUrl;
+                selectedFiles[val.index].downloadUrl = val.downloadUrl;
             });
-            let html = this.generateDom(selectList);
-            base.showMainDialog(pan[mode][0], html, pan[mode][1]);
+            let files = this.normalizeList(selectedFiles);
+            base.renderDownloadPanel(files, this);
         },
-        generateDom(list) {
-            let content = '<div class="pl-main">';
-            list.forEach((v, i) => {
-                if (v.dirEtag || v.caName) return;
-                let filename = base.esc(v.contentName || v.coName);
-                let size = base.sizeFormat(v.contentSize || v.coSize);
-                let dlink = v.downloadUrl;
-                if (!/^https?:\/\//.test(dlink)) {
-                    content += `<div class="pl-item"><div class="pl-item-name">${filename}</div><span class="pl-item-link pl-a" style="color:#cc3235">${base.esc(dlink)}</span></div>`;
-                    return;
-                }
-                if (mode === 'api') {
-                    content += `<div class="pl-item pl-row-api">
-                                <div class="pl-item-name">${filename}</div>
-                                <a class="pl-item-link listener-link-api" title="点击进行浏览器下载" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}" data-index="${i}">${base.esc(dlink)}</a>
-                                <button class="pl-item-btn pl-btn-primary listener-idm" data-filename="${base.esc(filename)}" data-filesize="${(v.contentSize || v.coSize)}" data-link="${base.esc(dlink)}" data-index="${i}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>IDM下载</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-copy" data-filename="${base.esc(filename)}" data-link="${base.esc(dlink)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制链接</button>
-
-                                <button class="pl-item-btn pl-btn-primary listener-link-api-btn" data-filename="${base.esc(filename)}"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制文件名</button>
-                                </div>`;
-                }
-                if (mode === 'aria') {
-                    let alink = this.convertLinkToAria(dlink, filename, navigator.userAgent);
-                    content += base.generateAriaRow(filename, dlink, alink, size);
-                }
-                if (mode === 'rpc') {
-                    content += base.generateRpcRow(filename, dlink, size);
-                }
-                if (mode === 'curl') {
-                    let curlCmd = this.convertLinkToCurl(dlink, filename, navigator.userAgent);
-                    content += base.generateCurlRow(filename, dlink, curlCmd, size);
-                }
-                if (mode === 'bc') {
-                    let bcCmd = this.convertLinkToBC(dlink, filename, navigator.userAgent);
-                    content += base.generateBCRow(filename, dlink, bcCmd, size);
-                }
-            });
-            content += '</div>';
-            if (mode === 'rpc') {
-                let rpc = base.getValue('setting_rpc_domain') + ':' + base.getValue('setting_rpc_port') + base.getValue('setting_rpc_path');
-                content += `<div class="pl-extra"><button class="pl-btn-primary listener-send-rpc"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>发送全部链接</button><button title="${rpc}" class="pl-btn-primary pl-btn-warning listener-open-setting" style="margin-left: 10px"><svg class="pl-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>设置 RPC 参数（当前为：${rpc}）</button></div>`;
-            }
-            return content;
+        normalizeList(list) {
+            return list.map(v => ({
+                filename: v.contentName || v.coName || '',
+                sizeStr: base.sizeFormat(v.contentSize || v.coSize),
+                rawSize: v.contentSize || v.coSize || 0,
+                dlink: v.downloadUrl && /^https?:\/\//.test(v.downloadUrl) ? v.downloadUrl : '',
+                isFolder: !!(v.dirEtag || v.caName),
+                raw: v,
+            }));
         },
         async sendLinkToRPC(filename, link) {
-            let rpc = {
-                domain: base.getValue('setting_rpc_domain'),
-                port: base.getValue('setting_rpc_port'),
-                path: base.getValue('setting_rpc_path'),
-                token: base.getValue('setting_rpc_token'),
-                dir: base.getValue('setting_rpc_dir'),
-            };
-            if (!base.validRpcDomain(rpc.domain)) {
-                message.error('RPC主机无效，仅允许本机或内网地址（如 http://127.0.0.1）');
-                return 'fail';
-            }
-            let url = `${rpc.domain}:${rpc.port}${rpc.path}`;
+            let rpc = base._rpcConfig();
+            if (!rpc) return 'fail';
+            let url = rpc.url;
             let rpcData = {
                 id: new Date().getTime(),
                 jsonrpc: '2.0',
@@ -3006,11 +3341,10 @@ base.iframeDownload(e.currentTarget.dataset.link);
             try {
                 let res = await base.post(url, rpcData, {}, '');
                 if (res.result) return 'success';
-                // can tell a bad token from a bad dir instead of a generic "失败".
-                message.error('aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
+                base.panelNotice('Aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                message.error('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
+                base.panelNotice('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
         },
@@ -3087,8 +3421,8 @@ base.iframeDownload(e.currentTarget.dataset.link);
             return '';
         },
         isOnlyFolder() {
-            for (let i = 0; i < selectList.length; i++) {
-                let v = selectList[i] || {};
+            for (let i = 0; i < selectedFiles.length; i++) {
+                let v = selectedFiles[i] || {};
                 if (v.kind === 'folder' || v.folder === true || v.isFolder === true || v.contentType === 'folder' || v.contentType === 'dir') continue;
                 return false;
             }
@@ -3097,9 +3431,9 @@ base.iframeDownload(e.currentTarget.dataset.link);
         async initPanLinker() {
             base.initDefaultConfig();
             base.addPanLinkerStyle();
-            pt = this.detectPage();
-            pan = LOCAL_CONFIG.yidong;
-            Object.freeze && Object.freeze(pan);
+            pageNum = this.detectPage();
+            panInfo = LOCAL_CONFIG.yidong;
+            Object.freeze && Object.freeze(panInfo);
             this.addButton();
             base.createTip();
             base.registerMenuCommand();
