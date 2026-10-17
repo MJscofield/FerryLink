@@ -25,7 +25,7 @@
 
 **👉 一个免费开源的网盘下载助手 👈**
 
-【FerryLink】是一款免费开源 **获取网盘文件真实下载地址** 的油猴脚本，支持 Windows、Mac、Linux，内置 **7 种下载器 / 7 种下载协议**：既能一键把直链推送给 IDM、Aria2、Motrix、BitComet，也能复制 cURL、aria2c 命令到终端自己跑。
+【FerryLink】是一款免费开源 **获取网盘文件真实下载地址** 的油猴脚本，支持 Windows、Mac、Linux，内置 **多种热门下载器与下载协议**：既能一键把直链推送给 IDM、Aria2、Motrix、BitComet，也能复制 cURL、aria2c 命令到终端自己跑。
 
 > ⚠️ **建议配合网盘超级会员使用** — 本助手仅解析下载链接，不突破网盘限速
 
