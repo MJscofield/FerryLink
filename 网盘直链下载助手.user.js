@@ -90,31 +90,33 @@
 
     // 每个协议的 act（行为类型）：nav=隐藏 iframe 导航 / push=本地推送 / copy=复制
     // 协议显示名按标准网络协议命名（id 为内部分派键，与执行器绑定，不允许改动）：
-    //   http   HTTP 直链       浏览器/XDown 直接 GET 直链
-    //   idm    本地 HTTP API   IDM 内置捕获接口 127.0.0.1:1001
-    //   rpc    JSON-RPC        aria2/Motrix RPC 接口（HTTP 6800 端口）
-    //   curl   curl            命令行 HTTP 客户端
-    //   aria2c aria2c          命令行下载器（HTTP/FTP/磁力）
-    //   bc     bc:// 协议      自定义 URI 协议
+    //   http   HTTP 直链       直链下载
+    //   idm    本地 HTTP API   HTTP 接口推送（IDM 内置捕获接口 127.0.0.1:1001）
+    //   rpc    JSON-RPC        HTTP 接口推送（aria2/Motrix 的 HTTP 6800 端口）
+    //   curl   cURL            命令行
+    //   aria2c Aria2c          命令行（HTTP/FTP/磁力）
+    //   bc     BC              URI 协议（bc:// 调起本机客户端）
+    //   bc-rpc BC-RPC          HTTP 接口推送（BitComet 远程下载）
     const PROTOCOLS = {
-        browser:  [{ id: 'http',   name: 'HTTP 直链',     group: 'http', act: 'nav'  }],
-        idm:      [{ id: 'idm',    name: '本地 HTTP API', group: 'http', act: 'push' }],
+        browser:  [{ id: 'http',   name: 'HTTP 直链',     group: 'link', act: 'nav'  }],
+        idm:      [{ id: 'idm',    name: '本地 HTTP API', group: 'api',  act: 'push' }],
         aria2:    [{ id: 'aria2c', name: 'Aria2c',         group: 'cli',  act: 'copy' },
-                   { id: 'rpc',    name: 'JSON-RPC',      group: 'http', act: 'push' }],
+                   { id: 'rpc',    name: 'JSON-RPC',      group: 'api',  act: 'push' }],
         motrix:   [{ id: 'aria2c', name: 'Aria2c',         group: 'cli',  act: 'copy' },
-                   { id: 'rpc',    name: 'JSON-RPC',      group: 'http', act: 'push' }],
-        xdown:    [{ id: 'http',   name: 'HTTP 直链',     group: 'http', act: 'copy', btn: '复制命令' }],
+                   { id: 'rpc',    name: 'JSON-RPC',      group: 'api',  act: 'push' }],
+        xdown:    [{ id: 'http',   name: 'HTTP 直链',     group: 'link', act: 'copy', btn: '复制命令' }],
         bitcomet: [{ id: 'bc',     name: 'BC',           group: 'uri',  act: 'copy', btn: '复制命令' },
-                   { id: 'bc-rpc', name: 'BC-RPC',       group: 'http', act: 'push' }],
+                   { id: 'bc-rpc', name: 'BC-RPC',       group: 'api',  act: 'push' }],
         term:     [{ id: 'curl',   name: 'cURL',          group: 'cli',  act: 'copy' },
                    { id: 'aria2c', name: 'Aria2c',        group: 'cli',  act: 'copy' }],
     };
 
-    // 协议族划分：未选择下载器时按此分组展示全部协议
+    // 协议族划分：按「链接怎么交出去」分四族——直链直接 GET / 推给本机接口 / 生成命令行 / 调起 URI
     const PROTO_GROUPS = [
-        { id: 'http', label: 'HTTP 家族' },
-        { id: 'cli',  label: '命令行 HTTP 客户端' },
-        { id: 'uri',  label: '自定义 URI 协议' },
+        { id: 'link', label: '直链下载' },
+        { id: 'api',  label: 'HTTP 接口推送' },
+        { id: 'cli',  label: '命令行' },
+        { id: 'uri',  label: 'URI 协议' },
     ];
     // 协议说明（协议 chip 的 title 提示）
     const PROTO_TITLES = {
