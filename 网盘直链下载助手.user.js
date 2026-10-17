@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              FerryLink
 // @namespace         https://github.com/Wjavan/FerryLink
-// @version           1.3.0
+// @version           1.3.1
 // @author            Wjavan
 // @description       支持百度/阿里/天翼/迅雷/夸克/移动六大网盘直链下载。支持 HTTP/JSON-RPC/cURL，推送至 IDM/XDown/Aria2/NDM/Motrix/终端。基于油小猴(youxiaohou.com)的网盘直链下载助手修改。
 // @copyright         2026, Wjavan (https://github.com/Wjavan)
@@ -90,31 +90,33 @@
 
     // 每个协议的 act（行为类型）：nav=隐藏 iframe 导航 / push=本地推送 / copy=复制
     // 协议显示名按标准网络协议命名（id 为内部分派键，与执行器绑定，不允许改动）：
-    //   http   HTTP 直链       浏览器/XDown 直接 GET 直链
-    //   idm    本地 HTTP API   IDM 内置捕获接口 127.0.0.1:1001
-    //   rpc    JSON-RPC        aria2/Motrix RPC 接口（HTTP 6800 端口）
-    //   curl   curl            命令行 HTTP 客户端
-    //   aria2c aria2c          命令行下载器（HTTP/FTP/磁力）
-    //   bc     bc:// 协议      自定义 URI 协议
+    //   http   HTTP 直链       直链下载
+    //   idm    本地 HTTP API   HTTP 接口推送（IDM 内置捕获接口 127.0.0.1:1001）
+    //   rpc    JSON-RPC        HTTP 接口推送（aria2/Motrix 的 HTTP 6800 端口）
+    //   curl   cURL            命令行
+    //   aria2c Aria2c          命令行（HTTP/FTP/磁力）
+    //   bc     BC              URI 协议（bc:// 调起本机客户端）
+    //   bc-rpc BC-RPC          HTTP 接口推送（BitComet 远程下载）
     const PROTOCOLS = {
-        browser:  [{ id: 'http',   name: 'HTTP 直链',     group: 'http', act: 'nav'  }],
-        idm:      [{ id: 'idm',    name: '本地 HTTP API', group: 'http', act: 'push' }],
+        browser:  [{ id: 'http',   name: 'HTTP 直链',     group: 'link', act: 'nav'  }],
+        idm:      [{ id: 'idm',    name: '本地 HTTP API', group: 'api',  act: 'push' }],
         aria2:    [{ id: 'aria2c', name: 'Aria2c',         group: 'cli',  act: 'copy' },
-                   { id: 'rpc',    name: 'JSON-RPC',      group: 'http', act: 'push' }],
+                   { id: 'rpc',    name: 'JSON-RPC',      group: 'api',  act: 'push' }],
         motrix:   [{ id: 'aria2c', name: 'Aria2c',         group: 'cli',  act: 'copy' },
-                   { id: 'rpc',    name: 'JSON-RPC',      group: 'http', act: 'push' }],
-        xdown:    [{ id: 'http',   name: 'HTTP 直链',     group: 'http', act: 'copy', btn: '复制命令' }],
+                   { id: 'rpc',    name: 'JSON-RPC',      group: 'api',  act: 'push' }],
+        xdown:    [{ id: 'http',   name: 'HTTP 直链',     group: 'link', act: 'copy', btn: '复制命令' }],
         bitcomet: [{ id: 'bc',     name: 'BC',           group: 'uri',  act: 'copy', btn: '复制命令' },
-                   { id: 'bc-rpc', name: 'BC-RPC',       group: 'http', act: 'push' }],
+                   { id: 'bc-rpc', name: 'BC-RPC',       group: 'api',  act: 'push' }],
         term:     [{ id: 'curl',   name: 'cURL',          group: 'cli',  act: 'copy' },
                    { id: 'aria2c', name: 'Aria2c',        group: 'cli',  act: 'copy' }],
     };
 
-    // 协议族划分：未选择下载器时按此分组展示全部协议
+    // 协议族划分：按「链接怎么交出去」分四族——直链直接 GET / 推给本机接口 / 生成命令行 / 调起 URI
     const PROTO_GROUPS = [
-        { id: 'http', label: 'HTTP 家族' },
-        { id: 'cli',  label: '命令行 HTTP 客户端' },
-        { id: 'uri',  label: '自定义 URI 协议' },
+        { id: 'link', label: '直链下载' },
+        { id: 'api',  label: 'HTTP 接口推送' },
+        { id: 'cli',  label: '命令行' },
+        { id: 'uri',  label: 'URI 协议' },
     ];
     // 协议说明（协议 chip 的 title 提示）
     const PROTO_TITLES = {
@@ -172,9 +174,8 @@
             return toast.fire({title: text, icon: 'question'});
         }
     };
-                // 历史版本遗留的凭证之前是直写 localStorage 让页面读的；
-                // getStorage/migrate 在首次遇到时会把它们迁入沙箱 GM 存储，
-                // 之后就只读 GM 版，页面再也碰不到这些敏感数据。
+    // 宿主页面直写 localStorage 的敏感凭证；getStorage/migrate 遇到就搬进沙箱
+    // GM 存储，此后只读 GM 版，页面再也碰不到。
     const LEGACY_LOCAL_KEYS = ['baiduyunPlugin_BDUSS', 'accessToken'];
     // ---- L2 领域层 ----
     let base = {
@@ -267,11 +268,11 @@
                 // 重试逻辑把错误包起来；失败不代表崩了，下次加载再试就行
         migrate() {
             const MARK = 'ferrylink_migrated_version';
-            const VERSION = '1.3.0';
+            const VERSION = '1.3.1';
             try {
                 if (GM_getValue(MARK, '') === VERSION) return;
-                                // 分享页功能已下线，这两个键是它留下的，顺手清掉免得一直躺在存储里
-                ['shareToken', 'share_token'].forEach((k) => {
+                                // 分享页功能已下线、下载器「记住上次选择」也已去掉，这些键都是它们留下的，顺手清掉免得一直躺在存储里
+                ['shareToken', 'share_token', 'ferrylink_last_downloader', 'ferrylink_last_protocol'].forEach((k) => {
                     try { GM_deleteValue(k); localStorage.removeItem(k); } catch (e) {}
                 });
                                 // 先做迁移：GM 存储为空就从 localStorage 拉过来一份；
@@ -435,8 +436,7 @@
         get(url, headers, type, extra) {
             headers = Object.assign({ 'Referer': location.origin }, headers);
             return new Promise((resolve, reject) => {
-                                // 从请求发出那一刻就跟踪，而不是 onloadstart——
-                                // 如果请求在 onloadstart 之前就报错，状态机就卡死了，abort 也收不到。
+                // 从请求发出就登记（报错早于 onloadstart 时接不到，abort 会漏）
                 const key = 'get_' + (extra && extra.index != null ? extra.index : Date.now());
                 const clear = () => { delete pendingRequests[key]; };
                 let requestObj = GM_xmlhttpRequest({
@@ -746,7 +746,7 @@
             });
             this._bindSettingEvents();
         },
-        // 设置页全部事件委托，只注册一次（旧版每次打开重复注册）
+        // 设置页走事件委托，只在首次打开时注册一次
         _bindSettingEvents() {
             if (this.settingBound) return;
             this.settingBound = true;
@@ -980,16 +980,6 @@
                 $btn.text('复制完成：成功 ' + links.length + '，失败 0');
                 setTimeout(() => $btn.text(old), 1500);
             });
-            doc.on('click', '.pl-dl-anchor', (e) => {
-                const target = e.currentTarget.dataset.anchor;
-                const $el = $('#pl-dl-' + target);
-                if ($el.length) {
-                    $('.pl-dl-panel').animate({ scrollTop: $el[0].offsetTop }, 300);
-                }
-            });
-            doc.on('keydown', '.pl-dl-anchor', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); }
-            });
             doc.on('click', '.listener-open-setting', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -1058,22 +1048,12 @@
         },
 
         // ---- L3 UI 层：下载面板渲染 ----
+        // 选择只存在 downloadState 里，而脚本实例活一个页面：同一页面内关掉再打开面板沿用上次选择，
+        // 刷新或重进页面时脚本重新加载，自然回到未选中
         renderDownloadPanel(files, adapter) {
             // 存住文件列表和适配器引用，供事件委托 handler 使用
             base.panelFiles = files;
             base._activeAdapter = adapter;
-            const savedDL = base.getValue('ferrylink_last_downloader') || '';
-            const savedProto = base.getValue('ferrylink_last_protocol') || '';
-            downloadState = { downloader: '', protocol: '' };
-            if (savedDL && PROTOCOLS[savedDL]) downloadState.downloader = savedDL;
-            if (downloadState.downloader && savedProto) {
-                const protos = PROTOCOLS[downloadState.downloader];
-                if (protos.some(p => p.id === savedProto)) downloadState.protocol = savedProto;
-            }
-            if (downloadState.downloader && !downloadState.protocol) {
-                const protos = PROTOCOLS[downloadState.downloader];
-                if (protos.length === 1) downloadState.protocol = protos[0].id;
-            }
 
             const fileRows = files.map((f, i) => {
                 const gray = f.isFolder || !f.dlink || !/^https?:\/\//.test(f.dlink);
@@ -1098,27 +1078,21 @@
             const intro = '已支持六大网盘直链；下载方式覆盖浏览器/IDM/Aria2/Motrix/XDown/BitComet/终端。未选择下载器时展示全部协议，选择下载器后自动筛选可用协议。百度直链带有效期，获取后请尽快使用。';
             const badCount = files.filter(f => f.isFolder || !f.dlink || !/^https?:\/\//.test(f.dlink)).length;
             const countLine = files.length === 0 ? '' : `<div class="pl-dl-file-count">共 ${files.length} 个文件${badCount ? '，' + badCount + ' 个不可操作' : ''}</div>`;
-            const emptyHtml = files.length === 0 ? '<div class="pl-dl-empty">请先在页面中选择文件</div>' : `${countLine}<div class="pl-dl-files" id="pl-dl-files">${fileRows}</div>`;
+            const emptyHtml = files.length === 0 ? '<div class="pl-dl-empty"><svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/></svg><div class="pl-dl-empty-title">请先在页面中选择文件</div></div>' : `${countLine}<div class="pl-dl-files" id="pl-dl-files">${fileRows}</div>`;
 
             const html = `<div class="pl-dl-panel">
                 <div class="pl-dl-intro">${intro}</div>
-                <div class="pl-dl-anchors">
-                    <span class="pl-dl-anchor" data-anchor="files" tabindex="0" role="button">文件列表</span>
-                    <span class="pl-dl-anchor" data-anchor="downloaders" tabindex="0" role="button">下载器</span>
-                    <span class="pl-dl-anchor" data-anchor="protocols" tabindex="0" role="button">协议</span>
-                    <span class="pl-dl-anchor" data-anchor="actions" tabindex="0" role="button">操作</span>
-                </div>
                 <div class="pl-dl-warning-bar" id="pl-dl-rpc-warning">尚未配置 Aria2 / Motrix 的 RPC 参数，请先完成配置</div>
                 ${emptyHtml}
-                <div class="pl-dl-section" id="pl-dl-downloaders">
+                <div class="pl-dl-section">
                     <div class="pl-dl-section-label">选择下载器</div>
                     <div class="pl-dl-chips">${dlChips}</div>
                 </div>
-                <div class="pl-dl-section" id="pl-dl-protocols">
+                <div class="pl-dl-section">
                     <div class="pl-dl-section-label" id="pl-dl-protocol-label">${base._protocolLabelText()}</div>
                     <div class="pl-dl-chips" id="pl-dl-protocol-chips">${base._protocolChipsHtml()}</div>
                 </div>
-                <div class="pl-dl-actions" id="pl-dl-actions">
+                <div class="pl-dl-actions">
                     <button class="pl-dl-btn pl-dl-btn-primary listener-dl-execute" disabled>请先选择下载器</button>
                     <button class="pl-dl-btn pl-dl-btn-secondary listener-dl-copy-name">复制文件名</button>
                     <button class="pl-dl-btn pl-dl-btn-secondary listener-dl-copy-link">复制下载链接</button>
@@ -1206,9 +1180,6 @@
             if (!proto) return;
             const valid = files.filter(f => !f.isFolder && f.dlink && /^https?:\/\//.test(f.dlink));
             if (!valid.length) { base.panelNotice('没有可操作的文件', 'warning'); return; }
-            // 先记住本次选择再弹窗——弹窗确认后面板会按 GM 值重建，先写后弹才不会恢复成旧的
-            base.setValue('ferrylink_last_downloader', downloadState.downloader);
-            base.setValue('ferrylink_last_protocol', downloadState.protocol);
             // 百度 50MB 预扫描：仅浏览器下载与 Aria2c 命令行会受 CDN 限制（其余方式带认证头不受限）
             const over = (proto.act === 'nav' || proto.id === 'aria2c') ? valid.filter(f => base._isBigBaiduLink(f)) : [];
             if (over.length) {
@@ -1606,6 +1577,7 @@
             .pl-setting-row-name { color: #e8eaed; }
             .pl-setting-row-sub, .pl-setting-tip-text, .pl-setting-help { color: #8b8e93; }
             .pl-setting-row-click:hover { background: #2a2b2c; }
+            .pl-setting-row-click::after { color: #8b8e93; }
             .pl-setting-row-click:hover::after { color: ${color}; }
             .pl-label { color: #e8eaed; }
             .pl-input { background: #2a2b2c; border-color: #3f4041; color: #e8eaed; }
@@ -1615,6 +1587,7 @@
             .pl-dl-panel { color: #d8d9da; }
             .pl-dl-intro, .pl-dl-help, .pl-dl-file-count, .pl-dl-section-label, .pl-dl-proto-group-label { color: #8b8e93; }
             .pl-dl-files { border-top-color: #343536; border-bottom-color: #343536; }
+            .pl-dl-section { border-top-color: #343536; }
             .pl-dl-file-row:hover { background: #2a2b2c; }
             .pl-dl-file-name { color: #e8eaed; }
             .pl-dl-file-size { color: #8b8e93; }
@@ -1622,8 +1595,9 @@
             .pl-mark.ok { color: #9ccc65; }
             .pl-mark.no { color: #e06c75; }
             .pl-dl-gray .pl-dl-file-link { color: #e06c75; }
-            .pl-dl-anchor { background: #2a2b2c; color: #a8abb0; }
-            .pl-dl-anchor:hover { background: #343536; }
+            /* 深色下滚动条提亮，否则跟深色背景同色看不见 */
+            body.fl-dark ::-webkit-scrollbar-thumb { background-color: rgba(255,255,255,.22); }
+            body.fl-dark ::-webkit-scrollbar-thumb:hover { background-color: rgba(255,255,255,.3); }
             .pl-dl-chip { background: #2a2b2c; border-color: #3f4041; color: #c9cacc; }
             .pl-dl-chip.active { background: ${color}; border-color: ${color}; color: #fff; }
             .pl-dl-actions { border-top-color: #343536; }
@@ -1633,6 +1607,7 @@
             .pl-dl-warning-bar { background: #3f2226; color: #e06c75; }
             .pl-dl-toast { background: #2a2b2c; color: #e8eaed; border-color: #3f4041; }
             .pl-dl-empty { color: #8b8e93; }
+            .pl-dl-empty svg { color: #5e6165; }
             .pl-dl-error { color: #e06c75; }
             .pl-dl-retry { background: #2a2b2c; border-color: ${color}; color: ${color}; }
             .pl-dl-retry:hover { background: ${color}22; }
@@ -1644,9 +1619,10 @@
             body::-webkit-scrollbar { display: none }
             ::-webkit-scrollbar { width: 6px; height: 10px }
             ::-webkit-scrollbar-track { border-radius: 0; background: none }
-            ::-webkit-scrollbar-thumb { background-color: rgba(85,85,85,.4) }
-            ::-webkit-scrollbar-thumb,::-webkit-scrollbar-thumb:hover { border-radius: 5px; -webkit-box-shadow: inset 0 0 6px rgba(0,0,0,.2) }
-            ::-webkit-scrollbar-thumb:hover { background-color: rgba(85,85,85,.3) }
+            ::-webkit-scrollbar-thumb { background-color: rgba(85,85,85,.65) }
+            ::-webkit-scrollbar-thumb,::-webkit-scrollbar-thumb:hover { border-radius: 999px; -webkit-box-shadow: inset 0 0 6px rgba(0,0,0,.2) }
+            ::-webkit-scrollbar-thumb:hover { background-color: rgba(85,85,85,.75) }
+            /* 面板之外的弹窗（助手配置 / 超 50MB 提示 / 取链进度 / toast）用 16px 基准；带 pl-popup 的面板由下一句盖成 12px */
             .swal2-popup { font-size: 16px !important; }
             .pl-popup { font-size: 12px !important; border-radius: 6px !important; box-shadow: 0 1px 2px rgb(28 28 32 / 4%), 0 6px 16px rgb(28 28 32 / 8%) !important; }
             .pl-popup a { color: ${color} !important; }
@@ -1673,14 +1649,14 @@
             .pl-setting-row:last-child { border-bottom: 0; }
             .pl-setting-row-main { flex: 1; min-width: 0; }
             .pl-setting-row-name { font-size: 14px; color: #303133; }
-            .pl-setting-row-sub { font-size: 11px; color: #909399; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+            .pl-setting-row-sub { font-size: 11px; color: #6b7078; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
             .pl-setting-row-click { cursor: pointer; border-radius: 6px; }
-            .pl-setting-row-click::after { content: '›'; font-size: 20px; line-height: 1; color: #c0c4cc; transition: color 150ms; }
+            .pl-setting-row-click::after { content: '›'; font-size: 20px; line-height: 1; color: #6b7078; transition: color 150ms; }
             .pl-setting-row-click:hover { background: #f5f6f7; }
             .pl-setting-row-click:hover .pl-setting-row-name { color: ${color}; }
             .pl-setting-row-click:hover::after { color: ${color}; }
-            .pl-setting-tip-text { font-size: 11px; color: #909399; line-height: 1.7; margin-top: 10px; text-align: left; }
-            .pl-setting-help { font-size: 12px; color: #909399; margin-top: 8px; text-align: center; }
+            .pl-setting-tip-text { font-size: 11px; color: #6b7078; line-height: 1.7; margin-top: 10px; text-align: left; }
+            .pl-setting-help { font-size: 12px; color: #6b7078; margin-top: 8px; text-align: center; }
             /* 同 .pl-dl-help a：设置页这一行也是「文字 + 链接」混排，同样要 immune 宿主样式 */
             .pl-setting-help a { color: ${color}; text-decoration: none; font: inherit; vertical-align: baseline; }
             .pl-setting-help a:hover { text-decoration: underline; }
@@ -1706,53 +1682,55 @@
             .pl-dl-panel { width: 100%; font-size: 13px; }
             .pl-dl-intro { font-size: 13px; color: #606266; line-height: 1.7; margin-bottom: 12px; }
             .pl-dl-intro a { color: ${color}; }
-            .pl-dl-help { font-size: 12px; color: #909399; margin-top: 10px; }
+            .pl-dl-help { font-size: 12px; color: #6b7078; margin-top: 10px; }
             /* 宿主网盘页会给裸 <a> 塞自己的 font-size / font-family / vertical-align。这一行里
                「帮助：」是裸文本节点、后面三个是 <a>，链接的字号或字体一旦被换掉，两者基线虽然仍共享，
                字形重心却会错开 —— 看起来就是「帮助：」偏高。让链接与旁边文字完全同源，再兜住对齐属性。 */
             .pl-dl-help a { color: ${color}; text-decoration: none; font: inherit; vertical-align: baseline; }
             .pl-dl-help a:hover { text-decoration: underline; }
-            .pl-dl-anchors { display: flex; gap: 6px; margin-bottom: 12px; }
-            .pl-dl-anchor { font-size: 12px; padding: 3px 12px; border-radius: 12px; background: #f0f2f5; cursor: pointer; transition: background 150ms; }
-            .pl-dl-anchor:hover { background: #e6e8eb; }
-            .pl-dl-btn:focus-visible, .pl-dl-chip:focus-visible, .pl-dl-anchor:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
+            .pl-dl-btn:focus-visible, .pl-dl-chip:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
             .pl-dl-files { max-height: 320px; overflow-y: auto; margin: 0 -10px; padding: 0 10px; border-top: 1px solid #e6e8eb; border-bottom: 1px solid #e6e8eb; }
-            .pl-dl-file-count { font-size: 12px; color: #909399; margin-bottom: 6px; }
-            .pl-dl-file-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; transition: background 180ms; }
-            .pl-dl-file-row:hover { background: #f5f6f7; }
+            .pl-dl-file-count { font-size: 12px; color: #6b7078; margin-bottom: 6px; font-weight: 600; }
+            /* 左右各外扩 10px 再由 padding 抵消，让 hover 底色与列表上下通栏边线同宽同齐 */
+            .pl-dl-file-row { display: flex; align-items: center; gap: 10px; margin: 0 -10px; padding: 8px 20px; transition: background 180ms; }
+            .pl-dl-file-row:hover { background: #f2f4f7; }
             .pl-dl-file-name { flex: 0 0 200px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; color: #111; }
-            .pl-dl-file-size { flex: 0 0 70px; font-size: 12px; color: #909399; text-align: right; }
+            .pl-dl-file-size { flex: 0 0 70px; font-size: 12px; color: #6b7078; text-align: right; }
             .pl-dl-file-link { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #787774; }
             .pl-dl-file-status { flex: 0 0 auto; font-size: 13px; min-width: 22px; text-align: center; }
             .pl-mark { font-size: 16px; font-weight: 700; line-height: 1; }
             .pl-mark.ok { color: #518c17; }
             .pl-mark.no { color: #cc3235; }
-            .pl-dl-gray { opacity: 0.45; }
+            /* 灰行只压名字、大小、状态，原因那格保持清楚，用户要读的就是它 */
+            .pl-dl-gray .pl-dl-file-name, .pl-dl-gray .pl-dl-file-size, .pl-dl-gray .pl-dl-file-status { opacity: 0.45; }
             .pl-dl-gray .pl-dl-file-link { color: #cc3235; }
-            .pl-dl-section { padding: 12px 0; }
-            .pl-dl-section-label { font-size: 12px; color: #909399; margin-bottom: 8px; font-weight: 500; }
+            .pl-dl-section { margin: 0 -10px; padding: 14px 10px; border-top: 1px solid #e6e8eb; }
+            .pl-dl-section-label { font-size: 12px; color: #6b7078; margin-bottom: 8px; font-weight: 600; }
+            #pl-dl-protocol-chips { row-gap: 4px; }
             .pl-dl-chips { display: flex; flex-wrap: wrap; gap: 8px; }
-            .pl-dl-chip { display: inline-flex; align-items: center; padding: 7px 18px; border-radius: 18px; font-size: 13px; border: 1px solid #dcdfe6; background: #fff; color: #606266; cursor: pointer; transition: all 180ms; white-space: nowrap; }
+            .pl-dl-chip { display: inline-flex; align-items: center; padding: 8px 18px; border-radius: 999px; font-size: 13px; border: 1px solid #d4d8de; background: #fafbfc; color: #606266; cursor: pointer; transition: background-color 180ms, border-color 180ms, color 180ms; white-space: nowrap; }
             .pl-dl-chip:hover { border-color: ${color}; color: ${color}; }
             .pl-dl-chip.active { background: ${color}; border-color: ${color}; color: #fff; }
             .pl-dl-chip.disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
             .pl-dl-proto-group { width: 100%; }
-            .pl-dl-proto-group-label { font-size: 12px; color: #909399; margin: 4px 0; }
-            .pl-dl-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #e6e8eb; }
-            .pl-dl-btn { padding: 9px 22px; border-radius: 8px; font-size: 13px; border: 0; cursor: pointer; transition: all 180ms; white-space: nowrap; min-height: 38px; }
+            .pl-dl-proto-group-label { font-size: 12px; color: #6b7078; margin: 4px 0; }
+            .pl-dl-actions { display: flex; align-items: center; gap: 10px; padding-top: 14px; border-top: 1px solid #e6e8eb; }
+            .pl-dl-btn { padding: 8px 22px; border-radius: 8px; font-size: 13px; border: 0; cursor: pointer; transition: background-color 180ms, border-color 180ms, color 180ms; white-space: nowrap; min-height: 38px; }
             .pl-dl-btn-primary { background: ${color}; color: #fff; font-size: 14px; font-weight: 500; min-width: 150px; }
             .pl-dl-btn-primary:hover { opacity: 0.9; }
             .pl-dl-btn-primary:disabled { background: #f5f6f7; color: #c0c4cc; cursor: not-allowed; font-weight: 400; }
-            .pl-dl-btn-secondary { background: #fff; color: #606266; border: 1px solid #dcdfe6; }
+            .pl-dl-btn-secondary { background: #fff; color: #606266; border: 1px solid #d4d8de; }
             .pl-dl-btn-right { margin-left: auto; }
             .pl-dl-btn-secondary:hover { background: #f5f6f7; }
             .pl-dl-btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
             .pl-dl-error { padding: 16px; text-align: center; color: #cc3235; }
-            .pl-dl-warning-bar { background: #fef0f0; color: #cc3235; padding: 6px 12px; border-radius: 4px; font-size: 12px; margin: 8px 0; display: none; }
-            .pl-dl-toast { position: fixed; top: 10vh; left: 50%; transform: translateX(-50%); z-index: 2147483647; display: flex; align-items: center; background: #fff; color: #303133; border: 1px solid #e6e8eb; padding: 13px 26px; border-radius: 8px; font-size: 15px; font-weight: 500; box-shadow: 0 4px 16px rgb(28 28 32 / 18%), 0 1px 3px rgb(28 28 32 / 12%); max-width: 80vw; }
+            .pl-dl-warning-bar { background: #fef0f0; color: #cc3235; padding: 6px 12px; border-radius: 6px; font-size: 12px; margin: 8px 0; display: none; }
+            .pl-dl-toast { position: fixed; top: 10vh; left: 50%; transform: translateX(-50%); z-index: 2147483647; display: flex; align-items: center; background: #fff; color: #303133; border: 1px solid #e6e8eb; padding: 12px 24px; border-radius: 8px; font-size: 15px; font-weight: 500; box-shadow: 0 4px 16px rgb(28 28 32 / 18%), 0 1px 3px rgb(28 28 32 / 12%); max-width: 80vw; }
             .pl-dl-toast span { word-break: break-all; }
-            .pl-dl-empty { padding: 28px; text-align: center; color: #909399; font-size: 14px; }
-            .pl-dl-retry { margin-top: 10px; padding: 8px 22px; border-radius: 8px; border: 1px solid ${color}; color: ${color}; background: #fff; cursor: pointer; font-size: 13px; }
+            .pl-dl-empty { padding: 14px 28px; text-align: center; color: #6b7078; font-size: 14px; }
+            .pl-dl-empty svg { display: block; margin: 0 auto 10px; color: #c3c8cf; }
+            .pl-dl-empty-title { font-size: 15px; }
+            .pl-dl-retry { margin-top: 10px; padding: 8px 22px; min-height: 38px; border-radius: 8px; border: 1px solid ${color}; color: ${color}; background: #fff; cursor: pointer; font-size: 13px; }
             .pl-dl-retry:hover { background: ${color}11; }
             /* 弹窗入场：drop（平滑掉落） */
             @keyframes ferrylinkDrop {
@@ -1761,6 +1739,10 @@
             }
             .swal2-popup:not(.swal2-hide) { animation: ferrylinkDrop 0.42s cubic-bezier(.22,.61,.36,1) both; }
             .pl-popup-flip:not(.swal2-hide) { animation: ferrylinkFlip 0.45s cubic-bezier(.22,.61,.36,1) both; transform-origin: center; }
+            /* 系统开启「减少动态效果」时直接出现，不播入场动画；其余用户不受影响 */
+            @media (prefers-reduced-motion: reduce) {
+                .swal2-popup:not(.swal2-hide), .pl-popup-flip:not(.swal2-hide) { animation: none; }
+            }
             ::selection { background: ${color}33; color: inherit; }
             @keyframes ferrylinkFlip {
                 0%   { transform: perspective(800px) rotateY(-80deg); opacity: 0; }
@@ -2497,7 +2479,6 @@
             });
         },
         _insertBeforeUpload(container, $button) {
-            // 用 prepend 才能插在「上传」这类既有子节点之前
             if (container.firstChild) {
                 container.insertBefore($button[0], container.firstChild);
             } else {
