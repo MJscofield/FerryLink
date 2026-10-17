@@ -1705,7 +1705,8 @@
             .pl-dl-btn:focus-visible, .pl-dl-chip:focus-visible, .pl-dl-anchor:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
             .pl-dl-files { max-height: 320px; overflow-y: auto; margin: 0 -10px; padding: 0 10px; border-top: 1px solid #e6e8eb; border-bottom: 1px solid #e6e8eb; }
             .pl-dl-file-count { font-size: 12px; color: #909399; margin-bottom: 6px; }
-            .pl-dl-file-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; transition: background 180ms; }
+            /* 左右各外扩 10px 再由 padding 抵消，让 hover 底色与列表上下通栏边线同宽同齐 */
+            .pl-dl-file-row { display: flex; align-items: center; gap: 10px; margin: 0 -10px; padding: 8px 20px; transition: background 180ms; }
             .pl-dl-file-row:hover { background: #f5f6f7; }
             .pl-dl-file-name { flex: 0 0 200px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; color: #111; }
             .pl-dl-file-size { flex: 0 0 70px; font-size: 12px; color: #909399; text-align: right; }
