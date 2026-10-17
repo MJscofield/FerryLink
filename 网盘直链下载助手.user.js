@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              FerryLink
 // @namespace         https://github.com/Wjavan/FerryLink
-// @version           1.3.0
+// @version           1.3.1
 // @author            Wjavan
 // @description       支持百度/阿里/天翼/迅雷/夸克/移动六大网盘直链下载。支持 HTTP/JSON-RPC/cURL，推送至 IDM/XDown/Aria2/NDM/Motrix/终端。基于油小猴(youxiaohou.com)的网盘直链下载助手修改。
 // @copyright         2026, Wjavan (https://github.com/Wjavan)
@@ -267,11 +267,11 @@
                 // 重试逻辑把错误包起来；失败不代表崩了，下次加载再试就行
         migrate() {
             const MARK = 'ferrylink_migrated_version';
-            const VERSION = '1.3.0';
+            const VERSION = '1.3.1';
             try {
                 if (GM_getValue(MARK, '') === VERSION) return;
-                                // 分享页功能已下线，这两个键是它留下的，顺手清掉免得一直躺在存储里
-                ['shareToken', 'share_token'].forEach((k) => {
+                                // 分享页功能已下线、下载器「记住上次选择」也已去掉，这些键都是它们留下的，顺手清掉免得一直躺在存储里
+                ['shareToken', 'share_token', 'ferrylink_last_downloader', 'ferrylink_last_protocol'].forEach((k) => {
                     try { GM_deleteValue(k); localStorage.removeItem(k); } catch (e) {}
                 });
                                 // 先做迁移：GM 存储为空就从 localStorage 拉过来一份；
@@ -1058,22 +1058,12 @@
         },
 
         // ---- L3 UI 层：下载面板渲染 ----
-        renderDownloadPanel(files, adapter) {
+        // keepSelection：50MB 确认框会销毁面板，重建时要沿用本次选择；平时打开一律不预选
+        renderDownloadPanel(files, adapter, keepSelection) {
             // 存住文件列表和适配器引用，供事件委托 handler 使用
             base.panelFiles = files;
             base._activeAdapter = adapter;
-            const savedDL = base.getValue('ferrylink_last_downloader') || '';
-            const savedProto = base.getValue('ferrylink_last_protocol') || '';
-            downloadState = { downloader: '', protocol: '' };
-            if (savedDL && PROTOCOLS[savedDL]) downloadState.downloader = savedDL;
-            if (downloadState.downloader && savedProto) {
-                const protos = PROTOCOLS[downloadState.downloader];
-                if (protos.some(p => p.id === savedProto)) downloadState.protocol = savedProto;
-            }
-            if (downloadState.downloader && !downloadState.protocol) {
-                const protos = PROTOCOLS[downloadState.downloader];
-                if (protos.length === 1) downloadState.protocol = protos[0].id;
-            }
+            if (!keepSelection) downloadState = { downloader: '', protocol: '' };
 
             const fileRows = files.map((f, i) => {
                 const gray = f.isFolder || !f.dlink || !/^https?:\/\//.test(f.dlink);
@@ -1206,9 +1196,6 @@
             if (!proto) return;
             const valid = files.filter(f => !f.isFolder && f.dlink && /^https?:\/\//.test(f.dlink));
             if (!valid.length) { base.panelNotice('没有可操作的文件', 'warning'); return; }
-            // 先记住本次选择再弹窗——弹窗确认后面板会按 GM 值重建，先写后弹才不会恢复成旧的
-            base.setValue('ferrylink_last_downloader', downloadState.downloader);
-            base.setValue('ferrylink_last_protocol', downloadState.protocol);
             // 百度 50MB 预扫描：仅浏览器下载与 Aria2c 命令行会受 CDN 限制（其余方式带认证头不受限）
             const over = (proto.act === 'nav' || proto.id === 'aria2c') ? valid.filter(f => base._isBigBaiduLink(f)) : [];
             if (over.length) {
@@ -1225,7 +1212,7 @@
                     cancelButtonText: '重新选择',
                 });
                 // 弹这个框会把下载面板销毁（swal2 弹窗单例），两个分支都先把面板恢复回来
-                base.renderDownloadPanel(base.panelFiles || [], base._activeAdapter);
+                base.renderDownloadPanel(base.panelFiles || [], base._activeAdapter, true);
                 if (!r.isConfirmed) return;
             }
             if (proto.act === 'nav') await base._executeNav(valid, adapter);
