@@ -24,9 +24,9 @@
 // @match             *://yun.139.com/*
 // @match             *://caiyun.139.com/*
 // @run-at            document-idle
-// @require           https://unpkg.com/jquery@3.7.0/dist/jquery.min.js
-// @require           https://unpkg.com/sweetalert2@10.16.6/dist/sweetalert2.all.min.js
-// @require           https://unpkg.com/js-md5@0.7.3/build/md5.min.js
+// @require           https://registry.npmmirror.com/jquery/3.7.0/files/dist/jquery.min.js
+// @require           https://registry.npmmirror.com/sweetalert2/10.16.6/files/dist/sweetalert2.all.min.js
+// @require           https://registry.npmmirror.com/js-md5/0.7.3/files/build/md5.min.js
 // @connect           baidu.com
 // @connect           baidupcs.com
 // @connect           jomodns.com
@@ -56,7 +56,7 @@
 // ==/UserScript==
 (function () {
     'use strict';
-            // npm 三个库走 unpkg CDN 拉取，没网时脚本直接 ReferenceError 死掉——加个横幅提示，至少让用户知道不是崩了
+            // 库没拉下来整脚本就挂，先探一下缺哪个
     if (typeof $ === 'undefined' || typeof Swal === 'undefined') {
         const missing = [typeof $ === 'undefined' ? 'jQuery' : null,
                          typeof Swal === 'undefined' ? 'SweetAlert2' : null]
