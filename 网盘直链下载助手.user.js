@@ -56,7 +56,7 @@
 // ==/UserScript==
 (function () {
     'use strict';
-            // 库没拉下来脚本就挂，先探缺哪个
+    // 库没拉下来脚本就挂，先探缺哪个
     if (typeof $ === 'undefined' || typeof Swal === 'undefined') {
         const missing = [typeof $ === 'undefined' ? 'jQuery' : null,
                          typeof Swal === 'undefined' ? 'SweetAlert2' : null]
@@ -85,9 +85,12 @@
     ];
 
     // act：nav 隐藏 iframe，push 推本机接口，copy 复制
+    // id 是分派键，改名会断执行器，别动
     //   http   HTTP 直链       直链下载
     //   idm    本地 HTTP API   IDM 内置接口 1001
     //   rpc    JSON-RPC        aria2/Motrix 的 6800 端口
+    //   curl   cURL            命令行
+    //   aria2c Aria2c          命令行
     //   bc     BC              bc:// 调起本机客户端
     //   bc-rpc BC-RPC          BitComet 远程下载
     const PROTOCOLS = {
@@ -104,6 +107,7 @@
                    { id: 'aria2c', name: 'Aria2c',        group: 'cli',  act: 'copy' }],
     };
 
+    // 四族：直接 GET / 推本机接口 / 生成命令行 / 调 URI
     const PROTO_GROUPS = [
         { id: 'link', label: '直链下载' },
         { id: 'api',  label: 'HTTP 接口推送' },
@@ -250,6 +254,7 @@
                     try { GM_deleteValue(k); localStorage.removeItem(k); } catch (e) {}
                 });
                 LEGACY_LOCAL_KEYS.forEach((k) => {
+                    // GM 没有就从 localStorage 拉一份；即使已有值也要清原来的，否则旧条目残留
                     try { base.getStorage(k); } catch (e) {}
                     try { localStorage.removeItem(k); } catch (e) {}
                 });
@@ -959,6 +964,7 @@
                     responseType: 'blob',
                     onprogress: (r) => { if (r.total > 0 && onProgress) onProgress(Math.floor(r.loaded * 100 / r.total), r.loaded); },
                     onload: (r) => {
+                        // 204 = IDM 把请求接走了，提示一下免得用户以为没反应
                         if (r && r.status === 204) { resolve({ ok: true, by: 'IDM' }); return; }
                         if (!r || r.status < 200 || r.status >= 300 || !r.response) {
                             resolve({ ok: false, why: 'HTTP ' + ((r && r.status) || '?') });
@@ -1208,6 +1214,7 @@
                 setTimeout(() => base._updateMainButton(), 4000);
             } else if (pid === 'bc-rpc') {
                 // 先探远程，通就静默推送，不通调本地 BC
+                // 探活上限 2.5s：点击的激活态只有 5s，卡住就把导航机会耗光
                 const remote = await Promise.race([
                     base.testBitcometConnection(true),
                     base.sleep(2500).then(() => false),
@@ -1333,7 +1340,7 @@
                     }
                     return h;
                 },
-                // bc:// 参数名按官方文档：url / refer / cookie / user_agent
+                // bc:// 参数名按官方文档：url / refer / cookie / user_agent，写成 referrer 客户端不认
                 _bc(link, filename, headers) {
                     const h = this.standHeaders(headers, true);
                     const p = [`url=${encodeURIComponent(link)}`];
@@ -1395,11 +1402,12 @@
                 if (!this.sendLinkToIDM.seq) this.sendLinkToIDM.seq = 1;
                 const seq = this.sendLinkToIDM.seq;
                 const time = Date.now();
+                // IDM 监听 127.0.0.1:1001，是本机接口，不跨域
                 const url = `http://127.0.0.1:1001/client/${encodeURIComponent(rpc.id)}?seq=${seq}`;
                 const ext = base.getExtension(filename);
-                                // IDM 头解析死板，少个结尾换行整块被拒
+                // IDM 头解析死板，少个结尾换行整块被拒
                 const headersText = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n') + '\n';
-                                // 长度前缀是字节数，文件名用 Blob().size
+                // 长度前缀是字节数，文件名用 Blob().size
                 const format = (key, val) => {
                     if (val === undefined || val === null) return '';
                     const str = String(val);
@@ -1413,14 +1421,14 @@
                     format(100, filename),
                     format(122, 4)
                 ];
-                                // 信封格式没文档，从左往右读
+                // 信封格式没文档，从左往右读
                 const data = `MSG#${seq}#13#1#10241:${seq + 1000}:0:${time}:0:1:2:${filesize || 0}:0,${fields.join(',')};`;
                 
                 const raw = await new Promise((resolve) => {
                     GM_xmlhttpRequest({
                         method: "POST", url, data,
                         headers: { "Content-Type": "text/plain" },
-                                                // withCredentials 关掉会 403
+                        // withCredentials 关掉会 403
                         withCredentials: true,
                         timeout: 15000,
                         onload: (r) => resolve(r.responseText || r.response || ''),
@@ -2108,7 +2116,7 @@
     let ali = {
         convertLinkToAria(link, filename, ua) {
                     filename = base.fixFilename(filename);
-                                        // 阿里 CDN 没浏览器 UA 就 403，命令也得带头
+                    // 阿里 CDN 没浏览器 UA 就 403，命令也得带头
                     return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 16 -s 16 -k 1M --header "Referer: ${location.origin}/" --header "User-Agent: ${ua || navigator.userAgent}"`);
                 },
         convertLinkToBC(link, filename, ua) {
@@ -2120,6 +2128,7 @@
         convertLinkToCurl(link, filename, ua) {
             let terminal = base.getValue('setting_terminal_type');
             filename = base.fixFilename(filename);
+            // -e 带 Referer：域名会迁移，写死 aliyundrive.com 在 alipan.com 上会 403
             return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}" -e "${location.origin}/" -A "${ua || navigator.userAgent}"`);
         },
         addPageListener() {
@@ -2535,6 +2544,7 @@
             let cookieStr = cookie ? ` --header "Cookie: ${cookie}"` : '';
             let uaStr = ` --header "User-Agent: ${navigator.userAgent}"`;
             // 迅雷多 Range 会断开，aria2 只能单线程
+            // 迅雷 CDN 认 cookie + UA，缺一个就断连
             return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 1 -s 1${cookieStr}${uaStr}`);
         },
         convertLinkToBC(link, filename, ua) {
@@ -2852,7 +2862,7 @@
             return encodeURIComponent(`aria2c "${link}" --out "${filename}" --header "User-Agent: ${panInfo.ua}" --header "Cookie: ${String(document.cookie).replace(/[\\"`$]/g, '')}"`);
         },
         convertLinkToBC(link, filename, ua) {
-                        // 只带 __pus/__puus 会 412，要给完整 cookie
+            // 只带 __pus/__puus 会 412，要给完整 cookie
             return base._bc(link, filename, {
                 'Referer': `${location.origin}/`,
                 'User-Agent': ua || navigator.userAgent,
@@ -2891,7 +2901,7 @@
                 });
             }
         },
-                // 夸克不给 token 就派到限速节点，约 30KB/s
+        // 夸克不给 token 就派到限速节点，约 30KB/s
         async getAccelToken() {
             const now = Date.now();
             const cached = base.getValue('quark_accel_token');
