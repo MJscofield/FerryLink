@@ -1445,9 +1445,6 @@
             });
         },
 
-        pageMiss() {
-            console.warn('[FerryLink] 未识别页面：' + location.host + location.pathname);
-        },
         listenElement(element, callback) {
             if (!element) return;
             if (watched[element]) return;
@@ -1800,7 +1797,7 @@
             });
         },
         addButton() {
-            if (!pageNum) { base.pageMiss(); return; }
+            if (!pageNum) return;
             let $button = $(`<div class="pl-button" style="position: relative; display: inline-block; margin-right: 8px;"><div style="color:#fff;background: ${color};border-color:${color}" class="g-button g-button-blue"><span class="g-button-right"><em class="icon icon-download"></em><span class="text" style="width: 60px;">下载助手</span></span></div>`);
             if (pageNum === 'main') {
                 $button = $(`<div class="pl-button" style="position: relative; display: inline-block; margin-right: 8px;"><button class="u-button u-button--primary u-button--small is-round is-has-icon" style="background: ${color};border-color: ${color};font-size: 14px; padding: 8px 16px; border: none;"><i class="u-icon u-icon-download"></i><span>下载助手</span></button>`);
@@ -2167,7 +2164,7 @@
                     } catch (e) { return ''; }
                 },
         addButton() {
-            if (!pageNum) { base.pageMiss(); return; }
+            if (!pageNum) return;
             let $toolWrap;
             let $button = $(`<div class="ali-button pl-button"><svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" width="16" height="16"><path d="M853.333 938.667H170.667a85.333 85.333 0 0 1-85.334-85.334v-384A85.333 85.333 0 0 1 170.667 384H288a32 32 0 0 1 0 64H170.667a21.333 21.333 0 0 0-21.334 21.333v384a21.333 21.333 0 0 0 21.334 21.334h682.666a21.333 21.333 0 0 0 21.334-21.334v-384A21.333 21.333 0 0 0 853.333 448H736a32 32 0 0 1 0-64h117.333a85.333 85.333 0 0 1 85.334 85.333v384a85.333 85.333 0 0 1-85.334 85.334z" fill="#fff"/><path d="M715.03 543.552a32.81 32.81 0 0 0-46.251 0L554.005 657.813v-540.48a32 32 0 0 0-64 0v539.734L375.893 543.488a32.79 32.79 0 0 0-46.229 0 32.427 32.427 0 0 0 0 46.037l169.557 168.811a32.81 32.81 0 0 0 46.251 0l169.557-168.81a32.47 32.47 0 0 0 0-45.974z" fill="#FF9C00"/></svg><span>下载助手</span></div>`);
             if (pageNum === 'home') {
@@ -2370,7 +2367,7 @@
             }
         },
         addButton() {
-            if (!pageNum) { base.pageMiss(); return; }
+            if (!pageNum) return;
             let $toolWrap;
             let $button = $(`<div class="tianyi-button pl-button">下载助手</div>`);
             if (pageNum === 'home') {
@@ -2579,7 +2576,7 @@
             return null;
         },
         addButton() {
-            if (!pageNum) { base.pageMiss(); return; }
+            if (!pageNum) return;
             let $toolWrap;
             let $button = $(`<div class="xunlei-button pl-button"><i class="xlpfont xlp-download"></i><span style="font-size: 13px;margin-left: 6px;">下载助手</span></div>`);
             if (pageNum === 'home') {
@@ -2891,7 +2888,7 @@
             });
         },
         addButton() {
-            if (!pageNum) { base.pageMiss(); return; }
+            if (!pageNum) return;
             let $toolWrap;
             let $button = $(`<div class="quark-button pl-button"><svg width="22" height="22" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd" stroke="#555" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 2-2z"/><path d="M14 8h1.553c.85 0 1.16.093 1.47.267.311.174.556.43.722.756.166.326.255.65.255 1.54v4.873c0 .892-.089 1.215-.255 1.54-.166.327-.41.583-.722.757-.31.174-.62.267-1.47.267H6.447c-.85 0-1.16-.093-1.47-.267a1.778 1.778 0 01-.722-.756c-.166-.326-.255-.65-.255-1.54v-4.873c0-.892.089-1.215.255-1.54.166-.327.41-.583.722-.757.31-.174.62-.267 1.47-.267H11"/><path stroke-linecap="round" stroke-linejoin="round" d="M11 3v10"/></g></svg><b>下载助手</b></div>`);
             if (pageNum === 'home') {
@@ -3069,7 +3066,7 @@
             });
         },
         addButton() {
-            if (!pageNum) { base.pageMiss(); return; }
+            if (!pageNum) return;
             let $toolWrap;
             let $button = $(`<div class="yidong-button pl-button">下载助手</div>`);
             if (pageNum === 'home') {
