@@ -23,7 +23,7 @@
 // @match             *://pan.quark.cn/*
 // @match             *://yun.139.com/*
 // @match             *://caiyun.139.com/*
-// @run-at            document-idle
+// @run-at            document-start
 // @require           https://registry.npmmirror.com/jquery/3.7.0/files/dist/jquery.min.js
 // @require           https://registry.npmmirror.com/sweetalert2/10.16.6/files/dist/sweetalert2.all.min.js
 // @require           https://registry.npmmirror.com/js-md5/0.7.3/files/build/md5.min.js
@@ -3446,5 +3446,12 @@
             }
         }
     };
-main.init();
+    // 注入时机用 document-start：MV3 下 document-idle 会因注册时序竞态整轮跳过（TM FAQ Q208 / issue #2126）。
+    // 但初始化逻辑依赖 DOM（$('body').append、document.querySelector），所以等 DOM ready 再跑 main.init()。
+    const startInit = () => main.init();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startInit, { once: true });
+    } else {
+        startInit();
+    }
 })();
