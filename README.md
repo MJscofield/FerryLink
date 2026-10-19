@@ -153,7 +153,7 @@
 | IDM 客户端 ID | `1` | IDM 里配多个客户端时用来指定编号 |
 | 终端类型 | Windows CMD | 另有 Windows PowerShell / Linux 终端 / Linux Shell / MacOS 终端 |
 | 主题颜色 | `#09AAFF` | 7 种预设颜色 |
-| 深色模式 | 跟随系统 | 浅色 / 深色 |
+| 深色模式 | 浅色 | 浅色 / 深色 |
 
 ---
 
