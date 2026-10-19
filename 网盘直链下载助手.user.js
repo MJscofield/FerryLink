@@ -528,7 +528,7 @@
                 { name: 'setting_rpc_dir', value: base.rpcDefaults.dir },
                 { name: 'setting_terminal_type', value: /Mac/i.test(navigator.platform) ? 'mt'
                      : /Win/i.test(navigator.platform) ? 'wc' : 'lt' },
-                { name: 'setting_theme_mode', value: 'auto' },
+                { name: 'setting_theme_mode', value: 'light' },
                 { name: 'setting_theme_color', value: '#09AAFF' },
                 { name: 'setting_bitcomet_domain', value: base.bcDefaults.domain },
                 { name: 'setting_bitcomet_port', value: base.bcDefaults.port },
@@ -572,8 +572,8 @@
                     <div class="pl-color">${colorBtn}</div>
                 </div>
                 <div class="pl-setting-row">
-                    <div class="pl-setting-row-main"><div class="pl-setting-row-name">深色模式</div><div class="pl-setting-row-sub listener-theme-mode-sub">${({ auto: '跟随系统', light: '浅色', dark: '深色' })[base.getValue('setting_theme_mode') || 'auto'] || '跟随系统'}</div></div>
-                    <button type="button" class="pl-input listener-theme-mode pl-setting-theme-btn">${({ auto: '跟随系统', light: '浅色', dark: '深色' })[base.getValue('setting_theme_mode') || 'auto'] || '跟随系统'}</button>
+                    <div class="pl-setting-row-main"><div class="pl-setting-row-name">深色模式</div><div class="pl-setting-row-sub listener-theme-mode-sub">${({ light: '浅色', dark: '深色' })[base.getValue('setting_theme_mode') || 'light'] || '浅色'}</div></div>
+                    <button type="button" class="pl-input listener-theme-mode pl-setting-theme-btn">${({ light: '浅色', dark: '深色' })[base.getValue('setting_theme_mode') || 'light'] || '浅色'}</button>
                 </div>
                 <div class="pl-setting-help">帮助：<a href="https://www.youxiaohou.com/zh-cn/motrix.html" target="_blank" rel="noreferrer noopener">RPC 配置说明</a> · <a href="https://www.youxiaohou.com/zh-cn/curl.html" target="_blank" rel="noreferrer noopener">cURL 使用教程</a> · <a href="https://github.com/Wjavan/FerryLink" target="_blank" rel="noreferrer noopener">项目主页</a></div>
             </div>`;
@@ -716,13 +716,13 @@
                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); }
             });
             doc.on('click', '.listener-theme-mode', () => {
-                const order = ['auto', 'light', 'dark'];
-                const labels = { auto: '跟随系统', light: '浅色', dark: '深色' };
-                const cur = base.getValue('setting_theme_mode') || 'auto';
-                const next = order[(order.indexOf(cur) + 1) % order.length] || 'auto';
+                const order = ['light', 'dark'];
+                const labels = { light: '浅色', dark: '深色' };
+                const cur = base.getValue('setting_theme_mode') || 'light';
+                const next = order[(order.indexOf(cur) + 1) % order.length] || 'light';
                 base.setValue('setting_theme_mode', next);
                 base.applyThemeMode();
-                const label = labels[next] || '跟随系统';
+                const label = labels[next] || '浅色';
                 $('.listener-theme-mode').text(label);
                 $('.listener-theme-mode-sub').text(label);
             });
@@ -1524,7 +1524,7 @@
             ::-webkit-scrollbar-thumb { background-color: rgba(85,85,85,.65) }
             ::-webkit-scrollbar-thumb,::-webkit-scrollbar-thumb:hover { border-radius: 999px; -webkit-box-shadow: inset 0 0 6px rgba(0,0,0,.2) }
             ::-webkit-scrollbar-thumb:hover { background-color: rgba(85,85,85,.75) }
-            /* 面板之外的弹窗（助手配置 / 超 50MB 提示 / 取链进度 / toast）用 16px 基准；带 pl-popup 的面板由下一句盖成 12px */
+            /* 面板外的弹窗用 16px 基准，面板本体 12px */
             .swal2-popup { font-size: 16px !important; }
             .pl-popup { font-size: 12px !important; border-radius: 6px !important; box-shadow: 0 1px 2px rgb(28 28 32 / 4%), 0 6px 16px rgb(28 28 32 / 8%) !important; }
             .pl-popup a { color: ${color} !important; }
@@ -1545,7 +1545,7 @@
             .quark-button:hover { background: #f6f6f6; }
             .quark-button:focus-visible { outline: 2px solid #3f85ff; outline-offset: 2px; }
             .pointer { cursor: pointer; }
-            /* 设置页：菜单式主设置页行样式（参考 LinkSwift setting-item） */
+            /* 设置页：菜单式主设置页行样式 */
             .pl-setting-list { text-align: left; }
             .pl-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 8px; margin: 0 -8px; border-bottom: 1px solid #e6e8eb; }
             .pl-setting-row:last-child { border-bottom: 0; }
@@ -1559,7 +1559,7 @@
             .pl-setting-row-click:hover::after { color: ${color}; }
             .pl-setting-tip-text { font-size: 11px; color: #6b7078; line-height: 1.7; margin-top: 10px; text-align: left; }
             .pl-setting-help { font-size: 12px; color: #6b7078; margin-top: 8px; text-align: center; }
-            /* 同 .pl-dl-help a：设置页这一行也是「文字 + 链接」混排，同样要 immune 宿主样式 */
+            /* 同 .pl-dl-help a：设置页这行也是文字加链接混排，一样要挡宿主样式 */
             .pl-setting-help a { color: ${color}; text-decoration: none; font: inherit; vertical-align: baseline; }
             .pl-setting-help a:hover { text-decoration: underline; }
             .pl-setting-label { display: flex; align-items: center; justify-content: space-between; padding-top: 10px; }
@@ -1585,9 +1585,7 @@
             .pl-dl-intro { font-size: 13px; color: #606266; line-height: 1.7; margin-bottom: 12px; }
             .pl-dl-intro a { color: ${color}; }
             .pl-dl-help { font-size: 12px; color: #6b7078; margin-top: 10px; }
-            /* 宿主网盘页会给裸 <a> 塞自己的 font-size / font-family / vertical-align。这一行里
-               「帮助：」是裸文本节点、后面三个是 <a>，链接的字号或字体一旦被换掉，两者基线虽然仍共享，
-               字形重心却会错开 —— 看起来就是「帮助：」偏高。让链接与旁边文字完全同源，再兜住对齐属性。 */
+            /* 宿主页会重置裸链接的字号字体，让「帮助：」偏高，这里用 font: inherit 对齐 */
             .pl-dl-help a { color: ${color}; text-decoration: none; font: inherit; vertical-align: baseline; }
             .pl-dl-help a:hover { text-decoration: underline; }
             .pl-dl-btn:focus-visible, .pl-dl-chip:focus-visible { outline: 2px solid ${color}; outline-offset: 2px; }
@@ -1641,7 +1639,7 @@
             }
             .swal2-popup:not(.swal2-hide) { animation: ferrylinkDrop 0.42s cubic-bezier(.22,.61,.36,1) both; }
             .pl-popup-flip:not(.swal2-hide) { animation: ferrylinkFlip 0.45s cubic-bezier(.22,.61,.36,1) both; transform-origin: center; }
-            /* 系统开启「减少动态效果」时直接出现，不播入场动画；其余用户不受影响 */
+            /* 系统开启减少动态效果时不播入场动画 */
             @media (prefers-reduced-motion: reduce) {
                 .swal2-popup:not(.swal2-hide), .pl-popup-flip:not(.swal2-hide) { animation: none; }
             }
@@ -1656,17 +1654,9 @@
             `;
             this.addStyle('panlinker-style', 'style', css);
             this.applyThemeMode();
-            const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
-            if (mq) {
-                const fn = () => { if ((base.getValue('setting_theme_mode') || 'auto') === 'auto') $(document.body).toggleClass('fl-dark', mq.matches); };
-                mq.addEventListener ? mq.addEventListener('change', fn) : mq.addListener(fn);
-            }
         },
         applyThemeMode() {
-            const mode = base.getValue('setting_theme_mode') || 'auto';
-            let dark;
-            if (mode === 'auto') dark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-            else dark = mode === 'dark';
+            const dark = (base.getValue('setting_theme_mode') || 'light') === 'dark';
             $(document.body).toggleClass('fl-dark', dark);
         },
     };
