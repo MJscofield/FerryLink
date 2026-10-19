@@ -56,7 +56,7 @@
 // ==/UserScript==
 (function () {
     'use strict';
-            // 库没拉下来整脚本就挂，先探一下缺哪个
+            // 库没拉下来脚本就挂，先探缺哪个
     if (typeof $ === 'undefined' || typeof Swal === 'undefined') {
         const missing = [typeof $ === 'undefined' ? 'jQuery' : null,
                          typeof Swal === 'undefined' ? 'SweetAlert2' : null]
@@ -70,14 +70,10 @@
     let pageNum = '', selectedFiles = [], panInfo = {}, color = '',
         doc = $(document), downloadProgress = {}, pendingRequests = {}, intervals = {};
 
-    // ---- L3 UI 层 state ----
-    // 行内结果记号：所有下载器的结果都走这两个常量，别在调用点手写「✓」（改样式只改这里）
     const MARK_OK = '<span class="pl-mark ok">✓</span>';
     const MARK_NO = '<span class="pl-mark no">✗</span>';
-    // 下载面板状态：downloader/protocol 随弹窗开关重置
     let downloadState = { downloader: '', protocol: '' };
 
-    // ---- 路由表：下载器对应哪个协议（全库唯一一张分派表）----
     const DOWNLOADERS = [
         { id: 'browser',  name: '浏览器'   },
         { id: 'idm',      name: 'IDM'      },
@@ -88,15 +84,12 @@
         { id: 'term',     name: '终端'     },
     ];
 
-    // 每个协议的 act（行为类型）：nav=隐藏 iframe 导航 / push=本地推送 / copy=复制
-    // 协议显示名按标准网络协议命名（id 为内部分派键，与执行器绑定，不允许改动）：
+    // act：nav 隐藏 iframe，push 推本机接口，copy 复制
     //   http   HTTP 直链       直链下载
-    //   idm    本地 HTTP API   HTTP 接口推送（IDM 内置捕获接口 127.0.0.1:1001）
-    //   rpc    JSON-RPC        HTTP 接口推送（aria2/Motrix 的 HTTP 6800 端口）
-    //   curl   cURL            命令行
-    //   aria2c Aria2c          命令行（HTTP/FTP/磁力）
-    //   bc     BC              URI 协议（bc:// 调起本机客户端）
-    //   bc-rpc BC-RPC          HTTP 接口推送（BitComet 远程下载）
+    //   idm    本地 HTTP API   IDM 内置接口 1001
+    //   rpc    JSON-RPC        aria2/Motrix 的 6800 端口
+    //   bc     BC              bc:// 调起本机客户端
+    //   bc-rpc BC-RPC          BitComet 远程下载
     const PROTOCOLS = {
         browser:  [{ id: 'http',   name: 'HTTP 直链',     group: 'link', act: 'nav'  }],
         idm:      [{ id: 'idm',    name: '本地 HTTP API', group: 'api',  act: 'push' }],
@@ -111,14 +104,12 @@
                    { id: 'aria2c', name: 'Aria2c',        group: 'cli',  act: 'copy' }],
     };
 
-    // 协议族划分：按「链接怎么交出去」分四族——直链直接 GET / 推给本机接口 / 生成命令行 / 调起 URI
     const PROTO_GROUPS = [
         { id: 'link', label: '直链下载' },
         { id: 'api',  label: 'HTTP 接口推送' },
         { id: 'cli',  label: '命令行' },
         { id: 'uri',  label: 'URI 协议' },
     ];
-    // 协议说明（协议 chip 的 title 提示）
     const PROTO_TITLES = {
         http:   '浏览器直接请求直链下载',
         idm:    '通过 IDM 本地 HTTP 接口（127.0.0.1:1001）推送任务，需 IDM 已启动且浏览器扩展已注册 client',
@@ -128,7 +119,6 @@
         bc:     '复制 bc:// 地址：粘贴到 BitComet「文件→打开 URL」或地址栏即可调起客户端下载；无需配置端口，需本机已安装 BitComet',
         'bc-rpc': '点击开始下载后先探测 BitComet 远程下载：可用则直接推送（无浏览器弹框）；不可用则自动改用 bc:// 调起本机 BitComet 客户端',
     };
-    // 全部协议总目录：由 PROTOCOLS 按协议族去重派生，保证与分派表同源
     const PROTO_ORDER = ['http', 'idm', 'rpc', 'curl', 'aria2c', 'bc', 'bc-rpc'];
     const ALL_PROTOCOLS = PROTO_GROUPS.map(g => {
         const seen = {};
@@ -174,10 +164,7 @@
             return toast.fire({title: text, icon: 'question'});
         }
     };
-    // 宿主页面直写 localStorage 的敏感凭证；getStorage/migrate 遇到就搬进沙箱
-    // GM 存储，此后只读 GM 版，页面再也碰不到。
     const LEGACY_LOCAL_KEYS = ['baiduyunPlugin_BDUSS', 'accessToken'];
-    // ---- L2 领域层 ----
     let base = {
         getCookie(name) {
             let cname = name + "=";
@@ -200,18 +187,13 @@
         deleteValue(name) {
             GM_deleteValue(name);
         },
-                // 阿里页面的 token 会自己轮换（access_token + cna 都重新生成），脚本只能读页面上已经写好的那个
         getStorage(key) {
             let v = null;
-                        // 其他 key（deviceid、captcha_* 等）不是阿里自己的轮换机制，
-                        // 所以继续按老方式读 localStorage。LEGACY_LOCAL_KEYS 这批不走这条路，走 GM-first 迁移路径。
             if (key === 'token' || !LEGACY_LOCAL_KEYS.includes(key)) {
                 try { v = localStorage.getItem(key); } catch (e) { /* storage unavailable */ }
             }
             if (v === null || v === undefined) v = GM_getValue(key, null);
             if ((v === null || v === undefined) && LEGACY_LOCAL_KEYS.includes(key)) {
-                                // 升级前版本的用户可能只在 localStorage 里留了这条凭证，
-                                // 迁一次：拉到 GM 存好，再把 localStorage 那一份删掉。
                 let legacy = null;
                 try { legacy = localStorage.getItem(key); } catch (e) { /* storage unavailable */ }
                 if (legacy !== null && legacy !== undefined) {
@@ -226,12 +208,10 @@
                 return v;
             }
         },
-                // 阿里 access_token 有效期很短，存到快过期时提前刷新
         async refreshAliToken(tk) {
             if (!tk || !tk.refresh_token) return tk;
             const now = Date.now();
             const exp = tk.expire_time ? Date.parse(tk.expire_time) : 0;
-                        // 提前一分钟刷新，避免正好卡点过期导致请求失败
             if (!exp || exp - now > 60000) return tk;
             try {
                 const res = await base.post(
@@ -252,10 +232,6 @@
             }
         },
         setStorage(key, value) {
-                        // 阿里页面自己的脚本会直接读 localStorage 里的 ali token，
-                        // 所以只把那个 key 留在 localStorage 做镜像；
-                        // 其他凭证（access_token、BDUSS、验证码、设备 ID 等）全关进 GM 沙箱，
-                        // 这样页面上的 XSS 也偷不走。
             let payload = value;
             if (this.isType(value) === 'object' || this.isType(value) === 'array') {
                 payload = JSON.stringify(value);
@@ -265,19 +241,14 @@
             }
             return GM_setValue(key, payload);
         },
-                // 重试逻辑把错误包起来；失败不代表崩了，下次加载再试就行
         migrate() {
             const MARK = 'ferrylink_migrated_version';
             const VERSION = '1.3.1';
             try {
                 if (GM_getValue(MARK, '') === VERSION) return;
-                                // 分享页功能已下线、下载器「记住上次选择」也已去掉，这些键都是它们留下的，顺手清掉免得一直躺在存储里
                 ['shareToken', 'share_token', 'ferrylink_last_downloader', 'ferrylink_last_protocol'].forEach((k) => {
                     try { GM_deleteValue(k); localStorage.removeItem(k); } catch (e) {}
                 });
-                                // 先做迁移：GM 存储为空就从 localStorage 拉过来一份；
-                                // 然后把 localStorage 那份无脑清掉——
-                                // 即使 GM 里已经有值也清，否则旧条目会残留，CWE-282 修补就不完整。
                 LEGACY_LOCAL_KEYS.forEach((k) => {
                     try { base.getStorage(k); } catch (e) {}
                     try { localStorage.removeItem(k); } catch (e) {}
@@ -289,8 +260,6 @@
             GM_setClipboard(text, 'text');
         },
         e(str) {
-                                                // unescape 已被废弃，改用 TextEncoder；
-                                                // 但 btoa 还是要二进制字符串，所以走 surrogate-safe 的写法。
                         return btoa(Array.from(new TextEncoder().encode(str), c => String.fromCharCode(c)).join(''));
                     },
         getExtension(name) {
@@ -331,10 +300,8 @@
             if (host === 'localhost' || host === '::1') return true;
             return /^((127|10)\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3})$/.test(host)
                 || /^172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)
-                // Tailscale 的虚拟网段是 100.64.0.0/10
                 || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(host);
         },
-        // 六家网盘的 RPC 推送都先干这三件事：取配置、校验主机、拼 url。主机不合法就提示并返回 null。
         _rpcConfig() {
             const rpc = {
                 domain: base.getValue('setting_rpc_domain'),
@@ -358,7 +325,6 @@
                 .replace(/^\.+/, '_')
                 .slice(0, 255);
         },
-                // 天翼和移动云盘都在调这个签名 helper，只放一份（分开写必然漂移）
         getRandomString(len) {
             len = len || 16;
             let $chars = 'ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678';
@@ -370,7 +336,6 @@
             return pwd;
         },
         getSign(e, t, a, n) {
-                        // i 得显式声明（let/var）：IIFE 的 strict 模式下隐式全局直接抛 ReferenceError，移动云盘所有下载都会挂
             let i = "";
             if (t) {
                 let s = Object.assign({}, t);
@@ -401,8 +366,6 @@
                                 data = JSON.stringify(data);
                             }
                             return new Promise((resolve, reject) => {
-                                                                // 把请求对象记录下来，方便后续 _resetData() 能主动 abort；
-                                                                // 没记的话 socket 就卡着不释放，后面的请求全被饿死。
                                 const key = 'post_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
                                 const clear = () => { delete pendingRequests[key]; };
                                 pendingRequests[key] = GM_xmlhttpRequest({
@@ -413,7 +376,6 @@
                                     onload: (res) => {
                                         clear();
                                         if (type === 'blob') { resolve(res); return; }
-                                                                                // 4xx 响应体是正常加载的（不是连接失败），所以这里 resolve 它
                                         if (res.status >= 400) {
                                             const body = res.response || res.responseText || '';
                                             let msg = 'HTTP ' + res.status;
@@ -436,7 +398,6 @@
         get(url, headers, type, extra) {
             headers = Object.assign({ 'Referer': location.origin }, headers);
             return new Promise((resolve, reject) => {
-                // 从请求发出就登记（报错早于 onloadstart 时接不到，abort 会漏）
                 const key = 'get_' + (extra && extra.index != null ? extra.index : Date.now());
                 const clear = () => { delete pendingRequests[key]; };
                 let requestObj = GM_xmlhttpRequest({
@@ -469,7 +430,6 @@
         getFinalUrl(url, headers) {
             headers = Object.assign({ 'Referer': location.origin }, headers);
             return new Promise((resolve, reject) => {
-                                // 纯 GET 会拉完整 body（几百 MB），拿文件大小没必要这么重
                 const key = 'finalurl_' + Date.now();
                 const done = (v) => { delete pendingRequests[key]; resolve(v); };
                 pendingRequests[key] = GM_xmlhttpRequest({
@@ -552,7 +512,6 @@
             }
             return compFiber.stateNode || compFiber;
         },
-        // 默认配置：initDefaultConfig 和 恢复默认 共用同一份，避免漂移
         rpcDefaults: { domain: 'http://localhost', port: '16800', path: '/jsonrpc', token: '', dir: 'C:' },
         bcDefaults: { domain: 'http://localhost', port: '8080', path: '/panel/task_add_httpftp_result', user: '', pass: '', dir: '' },
         initDefaultConfig() {
@@ -578,7 +537,6 @@
                 base.getValue(v.name) === undefined && base.setValue(v.name, v.value);
             });
         },
-        // 菜单式主设置页：每行一个设置项，专属配置进子页（结构参考 LinkSwift 的设置项与子页）
         showSetting() {
             const rpcVal = `${base.getValue('setting_rpc_domain')}:${base.getValue('setting_rpc_port')}${base.getValue('setting_rpc_path')}`;
             const idmId = base._idmId();
@@ -633,7 +591,6 @@
                     if (popup) popup.style.setProperty('z-index', '2147483647', 'important');
                 },
             }).then(() => {
-                // 点「配置」进入子页的程序化关窗不算退出
                 if (base._settingNav) { base._settingNav = false; return; }
                 message.success('设置成功！');
                 history.go(0);
@@ -642,7 +599,6 @@
             });
             this._bindSettingEvents();
         },
-        // RPC 专属配置子页；fromSetting=true 时关闭后回主设置页
         showRPCSetting(fromSetting) {
             const dom = `<div>
                 <div class="pl-dl-warning-bar" style="display:block">本页配置 Aria2 / Motrix 的 JSON-RPC 参数：Aria2 默认端口 6800、Motrix 默认 16800，按实际运行的客户端填写即可。</div>
@@ -676,7 +632,6 @@
             });
             this._bindSettingEvents();
         },
-        // IDM 专属配置子页，附 LinkSwift 同款获取说明
         showIDMSetting(fromSetting) {
             const idmId = base._idmId();
             const dom = `<div>
@@ -706,7 +661,6 @@
             });
             this._bindSettingEvents();
         },
-        // BitComet 远程下载服务器专属配置子页；fromSetting=true 时关闭后回主设置页
         showBitcometSetting(fromSetting) {
             const domain = base.getValue('setting_bitcomet_domain') || '';
             const port = base.getValue('setting_bitcomet_port') || '8080';
@@ -746,7 +700,6 @@
             });
             this._bindSettingEvents();
         },
-        // 设置页走事件委托，只在首次打开时注册一次
         _bindSettingEvents() {
             if (this.settingBound) return;
             this.settingBound = true;
@@ -790,7 +743,6 @@
             doc.on('change', '.listener-terminal', async (e) => {
                 base.setValue('setting_terminal_type', e.target.value);
             });
-            // 导航标志：点「配置」程序化关页不算用户关闭
             doc.on('click', '.listener-open-rpc-setting', () => {
                 base._settingNav = true;
                 Swal.close();
@@ -847,12 +799,10 @@
                 base.panelNotice('BitComet 配置已恢复默认', 'success');
             });
         },
-        // IDM 客户端 ID 读取（主菜单行摘要与子页共用）
         _idmId() {
             const idmCfg = base.getValue('setting_idm_rpc');
             return (Array.isArray(idmCfg) ? (idmCfg.find(i => i && i.default) || idmCfg[0] || {}).id : (idmCfg && idmCfg.id)) || '1';
         },
-        // RPC 连接测试：aria2.getVersion 探活，成功即回显版本号
         async testRpcConnection() {
             const domain = base.getValue('setting_rpc_domain'),
                 port = base.getValue('setting_rpc_port'),
@@ -869,8 +819,6 @@
                 base.panelNotice('无法连接 RPC（' + domain + ':' + port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启', 'error');
             }
         },
-        // BitComet 连接测试：POST 一个缺 url 字段的请求，服务端会拒绝建任务但足以验证连通与账号
-        // silent=true 时只返回 true/false，不弹提示（BC-RPC 静默探活用）
         async testBitcometConnection(silent) {
             const domain = base.getValue('setting_bitcomet_domain'),
                 port = base.getValue('setting_bitcomet_port'),
@@ -904,15 +852,10 @@
                 this.showSetting();
             });
         },
-        // 轻提示：外观沿用 swal2 顶部 toast，但自绘 DOM——swal2 10.x 的任何 fire（含 toast）
-        // 都会 _destroy() 当前打开的 modal，走 Swal 面板就会被连带关闭
         panelNotice(text, type) {
-            // 同一时刻只有一个提示槽（下面第一行就是删上一条），所以留一份最近文案：
-            // 推送失败时把原因顶到那一行的「链接」格，用户不用去追那条被覆盖的 toast。
             base._lastNotice = text;
             $('.pl-dl-toast').remove();
             const $t = $(`<div class="pl-dl-toast"><span>${base.esc(text)}</span></div>`);
-            // type 只用来定无障碍角色；配色一律白，不做红绿
             $t.attr('role', type === 'error' ? 'alert' : 'status');
             $('body').append($t);
             $t.hide().fadeIn(180);
@@ -920,12 +863,10 @@
             this._noticeTimer = setTimeout(() => { $t.fadeOut(200, () => $t.remove()); }, 2500);
         },
         createTip() {
-            // ---- L3 UI 层事件委托（下载面板）----
             doc.on('click', '.pl-dl-chip[data-type="downloader"]', (e) => {
                 const id = e.currentTarget.dataset.id;
                 const oldProto = downloadState.protocol;
                 $('.pl-dl-chip[data-type="downloader"]').removeClass('active');
-                // 再次点击已选中的下载器：取消选择，回到协议总览
                 if (downloadState.downloader === id) {
                     downloadState.downloader = '';
                     downloadState.protocol = '';
@@ -937,17 +878,14 @@
                 $(e.currentTarget).addClass('active');
                 const protos = PROTOCOLS[id];
                 if (oldProto && protos.some(p => p.id === oldProto)) {
-                    // 切换下载器后原协议仍受支持：保留选择，不打扰用户
                     downloadState.protocol = oldProto;
                 } else {
-                    // 单协议下载器自动选中唯一协议；多协议则不自动选
                     downloadState.protocol = protos.length === 1 ? protos[0].id : '';
                 }
                 base._updateProtocolChips();
                 base._updateMainButton();
             });
             doc.on('click', '.pl-dl-chip[data-type="protocol"]', (e) => {
-                // 协议总览模式（未选下载器）下点击协议：提示先选下载器
                 if (!downloadState.downloader) { base.panelNotice('请先在上方选择下载器', 'info'); return; }
                 downloadState.protocol = e.currentTarget.dataset.id;
                 $('.pl-dl-chip[data-type="protocol"]').removeClass('active');
@@ -1002,8 +940,6 @@
             $div.append($iframe);
             $('body').append($div);
         },
-                // 六个网盘的 API 下载都走同一条路——把 URL 交给隐藏的 iframe，触发浏览器原生下载。
-                // 至于浏览器扩展（比如 IDM）会不会拦截这次导航，那是扩展自己的事，脚本控制不了。
         iframeDownload(link) {
             if (!/^https?:\/\//i.test(link)) {
                 base.panelNotice('提示：下载链接无效！', 'error');
@@ -1013,9 +949,7 @@
             $('#downloadIframe').attr('src', link);
             return true;
         },
-        // 百度 >50MB 的直链签名绑 UA（认 User-Agent: pan.baidu.com），浏览器自己导航带不了这个头
-        // 服务器就回 403（表现是「下载刚出现就被掐断」）。改由脚本带认证头把字节取回来，再交给浏览器存盘。
-        // onProgress(pct) 把百分比交给调用方，由它画在那一行对应的格子上（不占主按钮的文字）。
+        // 百度 >50MB 直链绑 UA，浏览器导航 403，得由脚本带认证头取回
         _streamDownload(f, onProgress) {
             return new Promise((resolve) => {
                 GM_xmlhttpRequest({
@@ -1025,7 +959,6 @@
                     responseType: 'blob',
                     onprogress: (r) => { if (r.total > 0 && onProgress) onProgress(Math.floor(r.loaded * 100 / r.total), r.loaded); },
                     onload: (r) => {
-                        // 204 + 无内容 = 这次请求被 IDM 之类的下载器半路接走了（原版油小猴同款判定），算成功
                         if (r && r.status === 204) { resolve({ ok: true, by: 'IDM' }); return; }
                         if (!r || r.status < 200 || r.status >= 300 || !r.response) {
                             resolve({ ok: false, why: 'HTTP ' + ((r && r.status) || '?') });
@@ -1047,11 +980,7 @@
             });
         },
 
-        // ---- L3 UI 层：下载面板渲染 ----
-        // 选择只存在 downloadState 里，而脚本实例活一个页面：同一页面内关掉再打开面板沿用上次选择，
-        // 刷新或重进页面时脚本重新加载，自然回到未选中
         renderDownloadPanel(files, adapter) {
-            // 存住文件列表和适配器引用，供事件委托 handler 使用
             base.panelFiles = files;
             base._activeAdapter = adapter;
 
@@ -1127,9 +1056,6 @@
         _updateMainButton() {
             const $btn = $('.listener-dl-execute');
             if (!$btn.length) return;
-            // 一个文件都没勾选时：主按钮照样能算出协议文案（比如 XDown 的「复制命令」）并保持可点，
-            // 但点击会被事件委托里的 `if (!base.panelFiles.length) return;` 静默挡掉 —— 用户看到的是
-            // 「点了没反应」。这里直接禁用并写明原因，文案与面板空态一致。
             if (!base.panelFiles || !base.panelFiles.length) { $btn.prop('disabled', true).text('请先在页面中选择文件'); return; }
             if (!downloadState.downloader) { $btn.prop('disabled', true).text('请先选择下载器'); return; }
             const protos = PROTOCOLS[downloadState.downloader];
@@ -1150,12 +1076,10 @@
         _protocolLabelText() {
             return downloadState.downloader ? '可用协议' : '全部协议（选择下载器后自动筛选）';
         },
-        // 单个协议 chip 的 HTML（总览与筛选共用，title 说明来自 PROTO_TITLES）
         _protoChip(p) {
             const active = downloadState.protocol === p.id ? ' active' : '';
             return `<div class="pl-dl-chip${active}" data-type="protocol" data-id="${p.id}" title="${base.esc(PROTO_TITLES[p.id] || '')}">${p.name}</div>`;
         },
-        // 协议 chips 区 HTML：未选下载器时按协议族分组展示总目录，否则展示该下载器可用协议
         _protocolChipsHtml() {
             if (!downloadState.downloader) {
                 return ALL_PROTOCOLS.map(g => `
@@ -1172,7 +1096,6 @@
             $('#pl-dl-protocol-label').text(base._protocolLabelText());
             $c.html(base._protocolChipsHtml());
         },
-        // ---- L4 交付层 ----
         async executeAction(files, adapter) {
             if (!downloadState.downloader || !downloadState.protocol) return;
             const protos = PROTOCOLS[downloadState.downloader];
@@ -1180,7 +1103,7 @@
             if (!proto) return;
             const valid = files.filter(f => !f.isFolder && f.dlink && /^https?:\/\//.test(f.dlink));
             if (!valid.length) { base.panelNotice('没有可操作的文件', 'warning'); return; }
-            // 百度 50MB 预扫描：仅浏览器下载与 Aria2c 命令行会受 CDN 限制（其余方式带认证头不受限）
+            // 50MB 预扫描只管浏览器下载和 aria2c
             const over = (proto.act === 'nav' || proto.id === 'aria2c') ? valid.filter(f => base._isBigBaiduLink(f)) : [];
             if (over.length) {
                 const list = over.map(f => base.esc(f.filename) + '（' + base.sizeFormat(f.rawSize) + '）').join('<br>');
@@ -1195,7 +1118,6 @@
                     confirmButtonText: '继续下载',
                     cancelButtonText: '重新选择',
                 });
-                // 弹这个框会把下载面板销毁（swal2 弹窗单例），两个分支都先把面板恢复回来
                 base.renderDownloadPanel(base.panelFiles || [], base._activeAdapter);
                 if (!r.isConfirmed) return;
             }
@@ -1204,8 +1126,6 @@
             else if (proto.act === 'copy') await base._executeCopy(valid, adapter);
         },
         async _executeNav(files, adapter) {
-            // 50MB 预扫描已在 executeAction 统一处理
-            // 面板可能刚被确认弹窗销毁后重建，按钮引用要重新取
             const $btn = $('.listener-dl-execute');
             if (files.length > 5) base.panelNotice('共 ' + files.length + ' 个文件，逐个触发中…如遇拦截可改用推送/复制', 'info');
             $btn.text('正在逐个触发 ' + files.length + ' 个下载…').prop('disabled', true);
@@ -1214,17 +1134,11 @@
                 const f = files[i];
                 const $st = $('.pl-dl-file-status[data-status-index="' + f._idx + '"]');
                 if (base._isBigBaiduLink(f)) {
-                    // 浏览器自带下载带不了百度要的 UA（必然 403），改由脚本带认证头取回。
-                    // 进度就画在「链接」那一格（它是 flex:1 的宽格），取回期间顶替掉链接占位——
-                    // 别往 22px 的状态格里塞，那会把这一行挤得很难看。
                     const $bar = $st.siblings('.pl-dl-file-link');
                     const linkText = $bar.text();
                     const dark = $(document.body).hasClass('fl-dark');
                     const track = dark ? '#3f4041' : '#eef0f2';
-                    // 速度：GM_xhr 只给 loaded/total，不给速度，用两次采样的（字节差/时间差）自己算，
-                    // 再做一次指数平滑，免得数字每 100ms 乱跳。采样间隔 <200ms 时差值会被计时粒度放大，直接跳过。
                     let lastLoaded = 0, lastTs = Date.now(), spd = 0;
-                    // 进度条 = 这一格的底色（linear-gradient 当填充），不新增 DOM、不动布局
                     const paint = (pct, loaded) => {
                         if (typeof loaded === 'number') {
                             const now = Date.now(), dt = now - lastTs;
@@ -1246,7 +1160,6 @@
                     if (r.ok) {
                         ok++;
                         $st.html(MARK_OK);
-                        // 204 = IDM 把请求接走了（原版文案），否则用户会疑惑「打勾了但没弹保存框」
                         if (r.by) base.panelNotice('已成功唤起 ' + r.by + '，请查看 ' + r.by + ' 下载框！', 'success');
                     } else {
                         fail++;
@@ -1294,11 +1207,7 @@
                 if (fail > 0) base.panelNotice('部分文件推送失败，原因见各行说明', 'error'); else if (ok > 0) base.panelNotice('已推送至 Aria2，下载已开始', 'success');
                 setTimeout(() => base._updateMainButton(), 4000);
             } else if (pid === 'bc-rpc') {
-                // 先探远程：通就走 WebUI 推送（静默，无浏览器弹框）；不通就直接调起本地 BitComet。
-                // 探活不报错，只有本地这一步失败才报。
-                // 探活硬上限 2.5s：base.post 默认 30s 超时，而下面 _launchBC 依赖按钮点击带来的
-                // transient activation（约 5s）——探活卡住会把 activation 耗光，导航被浏览器丢掉。
-                // 超时了就按「远程不可用」处理（后台那个请求会被 _resetData abort）。
+                // 先探远程，通就静默推送，不通调本地 BC
                 const remote = await Promise.race([
                     base.testBitcometConnection(true),
                     base.sleep(2500).then(() => false),
@@ -1318,17 +1227,10 @@
                 setTimeout(() => base._updateMainButton(), 4000);
             }
         },
-        // 推送失败时把原因顶到那一行的「链接」格（那格宽，能读；全文挂 title 悬停看），
-        // 状态格继续放 ✗。原因就是刚才弹过的那条提示（panelNotice 存在 _lastNotice）。
         _markFailWithReason($cell, why) {
             const text = why || '推送失败（未返回原因）';
             $cell.siblings('.pl-dl-file-link').text(text).attr('title', text);
         },
-        // 本地调起：把一个真实 <a href="bc://…"> 插进页面并 click()。
-        // 与 LinkSwift 同一个机制（浏览器发起 bc:// 导航，交给系统弹「是否打开 BitComet」）。
-        // 得赶在按钮点击带来的 transient user activation 有效期内（约 5s）执行，
-        // 所以先探远程、探不通再走这里，全程不插额外按钮。
-        // 检测不到浏览器是否真的丢弃了导航，只能按「地址生成成功」计 ok。
         _launchBC(files) {
             const $btn = $('.listener-dl-execute');
             const adapter = base._activeAdapter;
@@ -1389,7 +1291,6 @@
         },
 
 
-                // IDM 用的是本地抓包协议，不是扩展嗅探。IDM 监听 127.0.0.1:1001，所以不需要跨域。
         standHeaders(headers = {}, addDefault = false) {
             if (!headers) return {};
             if (typeof headers === 'string') {
@@ -1416,11 +1317,9 @@
                 ...out
             };
         },
-                // 判定「百度超 50MB」：这类直链签名绑 UA，浏览器导航必 403，得走 _streamDownload 带认证头取回（原因写在那里）
                 _isBigBaiduLink(f) {
                     return /d\.pcs\.baidu\.com/.test(f.dlink || '') && (f.rawSize || 0) > 50 * 1024 * 1024;
                 },
-                // 可复用的 CDN 认证头：百度/迅雷/夸克 特殊认证头，供 IDM / BitComet 推送复用
                 _cdnHeaders(link) {
                     const h = {};
                     if (/d\.pcs\.baidu\.com/.test(link)) h['User-Agent'] = 'pan.baidu.com';
@@ -1434,9 +1333,7 @@
                     }
                     return h;
                 },
-                // bc:// 载荷的参数名以官方文档为准：url / refer / cookie / user_agent
-                // （写成 referrer 客户端不认，等于没带 Referer——阿里 CDN 会因此 400/403）。
-                // 适配器只管给头，拼载荷这一份在这里。
+                // bc:// 参数名按官方文档：url / refer / cookie / user_agent
                 _bc(link, filename, headers) {
                     const h = this.standHeaders(headers, true);
                     const p = [`url=${encodeURIComponent(link)}`];
@@ -1445,7 +1342,6 @@
                     if (h['Cookie']) p.push('cookie=' + encodeURIComponent(h['Cookie']));
                     return encodeURIComponent(`bc://http/${this.e(`AA/${encodeURIComponent(filename)}/?${p.join('&')}ZZ`)}`);
                 },
-                // 推送到 BitComet 远程下载服务（HTTP 推送）
                 async sendLinkToBitcomet(filename, link, headers) {
                     const domain = base.getValue('setting_bitcomet_domain');
                     const port = base.getValue('setting_bitcomet_port');
@@ -1476,8 +1372,6 @@
                             'Authorization': 'Basic ' + this.e(user + ':' + pass),
                             'Content-Type': 'application/x-www-form-urlencoded',
                             'Cache-Control': 'max-age=0',
-                            // BitComet 面板的 /panel 接口校验 Origin/Referer：只认面板自身地址，
-                            // 不能沿用 standHeaders 注入的网盘页域名（否则被拒）
                             'Origin': origin,
                             'Referer': origin + '/panel/task_add_httpftp',
                             'User-Agent': navigator.userAgent,
@@ -1495,7 +1389,6 @@
         async sendLinkToIDM(link, filename, filesize, headers = {}) {
             const list = base.getValue('setting_idm_rpc') || [];
             const rpc = list.find(i => i && i.default) || list[0] || { id: '1' };
-                        // 串行化通过 Promise 链实现——IDM 一次只能处理一条 MSG。
             if (!this.sendLinkToIDM.lock) this.sendLinkToIDM.lock = Promise.resolve();
             return this.sendLinkToIDM.lock = this.sendLinkToIDM.lock.then(async () => {
                 headers = this.standHeaders(headers);
@@ -1504,9 +1397,9 @@
                 const time = Date.now();
                 const url = `http://127.0.0.1:1001/client/${encodeURIComponent(rpc.id)}?seq=${seq}`;
                 const ext = base.getExtension(filename);
-                                // 坑 1：IDM 的头解析很死板——少了那个结尾换行，整个 block 直接拒绝解析。
+                                // IDM 头解析死板，少个结尾换行整块被拒
                 const headersText = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n') + '\n';
-                                // 坑 2：长度前缀是字节数，所以多字节文件名要用 Blob().size，不能用 String.length（算的是 UTF-16 单元数）。
+                                // 长度前缀是字节数，文件名用 Blob().size
                 const format = (key, val) => {
                     if (val === undefined || val === null) return '';
                     const str = String(val);
@@ -1520,15 +1413,14 @@
                     format(100, filename),
                     format(122, 4)
                 ];
-                                // 坑 3：信封格式没文档。从左往右读：
+                                // 信封格式没文档，从左往右读
                 const data = `MSG#${seq}#13#1#10241:${seq + 1000}:0:${time}:0:1:2:${filesize || 0}:0,${fields.join(',')};`;
                 
-                // 绕开 base.post——它会拒 4xx 并当 JSON 解析；IDM 的响应是纯文本。
                 const raw = await new Promise((resolve) => {
                     GM_xmlhttpRequest({
                         method: "POST", url, data,
                         headers: { "Content-Type": "text/plain" },
-                                                // withCredentials 得开——LinkSwift 就是这么做的，关掉就 403。
+                                                // withCredentials 关掉会 403
                         withCredentials: true,
                         timeout: 15000,
                         onload: (r) => resolve(r.responseText || r.response || ''),
@@ -1537,7 +1429,6 @@
                     });
                 });
                 const res = raw || false;
-                                // IDM 收到重复请求会直接丢包不给响应，所以一次发送失败会导致整个请求卡住。
                 this.sendLinkToIDM.seq++;
                 if (res && String(res).endsWith('3;')) {
                     return 'success';
@@ -1546,20 +1437,26 @@
             });
         },
 
+        pageMiss() {
+            console.warn('[FerryLink] 未识别页面：' + location.host + location.pathname);
+        },
         listenElement(element, callback) {
             if (!element) return;
             if (watched[element]) return;
             watched[element] = true;
-            const checkInterval = 500;
-            let wasElementFound = false;
+            const checkInterval = 500, warnAfter = 15000;
+            let everFound = false, warned = false;
+            const startAt = Date.now();
             function checkElement() {
-                if (document.querySelector(element)) {
-                    wasElementFound = true;
-                    callback();
-                } else if (wasElementFound) {
-                    wasElementFound = false;
-                }
                 setTimeout(checkElement, checkInterval);
+                if (document.querySelector(element)) {
+                    everFound = true;
+                    callback();
+                }
+                if (!everFound && !warned && !document.querySelector('.pl-button') && Date.now() - startAt > warnAfter) {
+                    warned = true;
+                    console.warn('[FerryLink] 挂载点未出现：' + element + '（15 秒内一直没找到，页面结构可能已改）');
+                }
             }
             checkElement();
         },
@@ -1613,7 +1510,7 @@
             .pl-dl-retry:hover { background: ${color}22; }
             .swal2-popup, .swal2-title, .swal2-html-container { color: #e8eaed; }
             `;
-            // 组合选择器每一项都要带前缀，不然只有第一个生效
+            // 组合选择器每项都带前缀，否则只第一个生效
             const darkScoped = darkRules.trim().split('\n').map(l => l.trim() ? l.trim().replace(/(^|,\s+)([.#])/g, '$1body.fl-dark $2') : l).join('\n');
             let css = `
             body::-webkit-scrollbar { display: none }
@@ -1760,7 +1657,6 @@
                 mq.addEventListener ? mq.addEventListener('change', fn) : mq.addListener(fn);
             }
         },
-        // 深色模式：auto 跟随系统，light/dark 手动覆盖
         applyThemeMode() {
             const mode = base.getValue('setting_theme_mode') || 'auto';
             let dark;
@@ -1829,7 +1725,7 @@
         },
     };
 
-    // ---- L1 适配层：六个网盘适配器（认证/取链/归一化/命令转换），禁止跨适配器引用 ----
+    // L1 适配层：六个网盘适配器，禁止互相引用
     let baidu = {
         _linkCache: [],   // dlink 内存缓存 [{ id: fs_id, expires, data }]，会话级、不落 GM 存储
         _getFidArray() {
@@ -1889,26 +1785,26 @@
         addPageListener() {
             doc.on('click', '.pl-button', async (e) => {
                 if ($(e.target).closest('.g-button-menu, .menu').length) return;
-                // 这里**不能**用 didOpen 调 Swal.showLoading()：swal2 的 runDidOpen 把 didOpen 包在 setTimeout 里，
-                // 而「一个文件都没勾」这条分支是全同步的（getPCSLink 里 Swal.close() 后紧接 renderDownloadPanel()），
-                // 等 setTimeout 轮到它时面板已经开在 DOM 里了；showLoading() 内部 getPopup/getActions/getLoader
-                // 全是 document.querySelector 全局查询，圈会加到面板自己身上，且再没人对面板调 hideLoading，
-                // 于是面板底部永远转。改成和其他五个网盘一样的同步调法。
+                // 不走 didOpen 调 showLoading：它包在 setTimeout 里，面板已在 DOM
                 Swal.fire({ title: '获取下载链接', html: '<div class="pl-fetch-progress">正在获取…</div>', allowOutsideClick: false, showConfirmButton: false });
                 Swal.showLoading();
                 try { await this.getPCSLink(); } catch (err) { Swal.close(); base.renderErrorPanel('获取下载链接失败：' + (err && err.message || '未知错误'), this); } finally { if (document.querySelector('.swal2-popup.swal2-loading')) Swal.close(); }
             });
         },
         addButton() {
-            if (!pageNum) return;
-            let $toolWrap;
+            if (!pageNum) { base.pageMiss(); return; }
             let $button = $(`<div class="pl-button" style="position: relative; display: inline-block; margin-right: 8px;"><div style="color:#fff;background: ${color};border-color:${color}" class="g-button g-button-blue"><span class="g-button-right"><em class="icon icon-download"></em><span class="text" style="width: 60px;">下载助手</span></span></div>`);
-            if (pageNum === 'home') $toolWrap = $(panInfo.btn.home);
             if (pageNum === 'main') {
-                $toolWrap = $(panInfo.btn.main);
                 $button = $(`<div class="pl-button" style="position: relative; display: inline-block; margin-right: 8px;"><button class="u-button u-button--primary u-button--small is-round is-has-icon" style="background: ${color};border-color: ${color};font-size: 14px; padding: 8px 16px; border: none;"><i class="u-icon u-icon-download"></i><span>下载助手</span></button>`);
             }
-            $toolWrap.prepend($button);
+            const sel = pageNum === 'home' ? panInfo.btn.home : panInfo.btn.main;
+            const tryInject = () => {
+                let $toolWrap = $(sel);
+                if (!$toolWrap.length || $('.pl-button').length) return false;
+                $toolWrap.prepend($button);
+                return true;
+            };
+            if (!tryInject()) base.listenElement(sel, tryInject);
             this.setBDUSS();
             this.addPageListener();
         },
@@ -1938,7 +1834,6 @@
                     }
                 }, 1000);
             });
-                        // HEAD/ranged-GET 能从响应头拿到 token，不用新开标签——用户已授权时百度直接 302 到 login_success。
             try {
                 if (base.getFinalUrl) {
                     let res = await base.getFinalUrl(panInfo.pcs[3]);
@@ -1965,7 +1860,6 @@
                 }
             } catch (e) {
             }
-                        // GM_openInTab 的场景：iframe 点不了授权按钮（@match 没覆盖 oauth 页面）。
             base.deleteValue('baidu_access_token');
             GM_openInTab(panInfo.pcs[3], {active: false, insert: true, setParent: true});
             let token = await waitForToken(60);
@@ -2033,7 +1927,6 @@
                 }
                 if (!accessToken) accessToken = await this.getToken();
 
-                // 命中内存缓存的文件跳过请求。只缓存 dlink 本体——token 是 normalizeList 渲染时现拼的，刷新 token 不影响缓存。
                 const now = Date.now();
                 const files = selectedFiles.filter(v => +v.isdir !== 1);
                 const pending = files.filter(it => {
@@ -2047,7 +1940,7 @@
                     return true;
                 });
 
-                // 分批取链。百度 filemetas 的 fsids 官方上限 100，取 50 留余量，超限是整单失败。
+                // 百度 fsids 上限 100，取 50 留余量
                 const BATCH = 50;
                 let returnedCount = 0, refreshed = false, anyMarked = false;
                 for (let i = 0; i < pending.length; i += BATCH) {
@@ -2062,7 +1955,6 @@
                         Swal.close(); return message.error('提示：页面过期，请刷新重试！');
                     }
                     if (!res || res.errno !== 0) {
-                        // token 失效会波及所有批次：刷新一次 token 本批重试，其余批次用新 token 继续
                         if (!refreshed && maxRequestTime >= 1) {
                             refreshed = true;
                             base.deleteValue('baidu_access_token');
@@ -2077,8 +1969,7 @@
                         batch.forEach(x => { x.dlink = reason; });
                         anyMarked = true;
                     } else if (!Array.isArray(res.list)) {
-                        // 百度可能把错误说明塞进 list 字段（字符串）而不是文件数组，如大文件需 SVIP。
-                        // 这是明确拒绝，不重试，文本直接当行的提示渲染。
+                        // 百度会把错误说明塞进 list（如大文件要 SVIP），不重试
                         const text = typeof res.list === 'string' && res.list ? res.list : '该文件未返回下载链接';
                         batch.forEach(x => { x.dlink = text; });
                         anyMarked = true;
@@ -2090,11 +1981,9 @@
                                 returnedCount++;
                                 this._linkCache.push({ id: x.fs_id, expires: now + 4 * 60 * 60 * 1000, data: hit });
                             } else if (res.list.length > 0) {
-                                // 列表非空却没有本文件：该文件个体的失败，标记
                                 x.dlink = '该文件未返回下载链接（可能已失效或被禁止下载）';
                                 anyMarked = true;
                             }
-                            // list 为空数组：疑似 token 问题，不标记，留给循环后的整单重试
                         });
                     }
 
@@ -2103,7 +1992,6 @@
                     if (i + BATCH < pending.length) await base.sleep(1000);
                 }
 
-                // 所有批次都返回空 list（未被标记任何文本）：勾选里确有文件（fidArray 已过滤文件夹），空列表只能是 token 问题
                 if (pending.length > 0 && returnedCount === 0 && !anyMarked) {
                     if (maxRequestTime >= 1) {
                         base.deleteValue('baidu_access_token');
@@ -2120,7 +2008,6 @@
         },
         normalizeList(list) {
             return list.map(v => {
-                // dlink 可能是错误提示文本（分批失败/被拒绝下载），只有真 URL 才拼 token
                 let dlink = '';
                 if (v.dlink) {
                     dlink = /^https?:\/\//.test(v.dlink)
@@ -2156,11 +2043,9 @@
             try {
                 let res = await base.post(url, rpcData, {"User-Agent": panInfo.ua}, '');
                 if (res.result) return 'success';
-                                // aria2 收到了请求但拒绝了（token/path 不对），把它的原始错误吐给用户而不是笼统的「失败」。
                 base.panelNotice('Aria2 拒绝请求：' + ((res.error && res.error.message) || '未知错误（请检查 RPC 密钥与保存路径）'));
                 return 'fail';
             } catch (e) {
-                                // 走到这里几乎都是「端口没开」的情况——aria2 根本没响应。
                 base.panelNotice('无法连接 RPC（' + rpc.domain + ':' + rpc.port + '）' + (e && e.message ? '：' + e.message : '') + '，请确认下载器已启动且 RPC 服务已开启');
                 return 'fail';
             }
@@ -2223,12 +2108,10 @@
     let ali = {
         convertLinkToAria(link, filename, ua) {
                     filename = base.fixFilename(filename);
-                                        // 阿里的 CDN 没浏览器 UA 就直接 403，aria2c 命令也得带 header——
-                                        // 不然生成的命令在用户终端里跑不起来，但脚本内部下载是正常的。
+                                        // 阿里 CDN 没浏览器 UA 就 403，命令也得带头
                     return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 16 -s 16 -k 1M --header "Referer: ${location.origin}/" --header "User-Agent: ${ua || navigator.userAgent}"`);
                 },
         convertLinkToBC(link, filename, ua) {
-            // Referer 取当前页 origin：域名会迁移，写死 aliyundrive.com 在 alipan.com 上必 403
             return base._bc(link, filename, {
                 'Referer': `${location.origin}/`,
                 'User-Agent': ua || navigator.userAgent,
@@ -2237,7 +2120,6 @@
         convertLinkToCurl(link, filename, ua) {
             let terminal = base.getValue('setting_terminal_type');
             filename = base.fixFilename(filename);
-                        // -A 是 curl 的 UA 参数；阿里 CDN 没它直接 403。
             return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}" -e "${location.origin}/" -A "${ua || navigator.userAgent}"`);
         },
         addPageListener() {
@@ -2276,12 +2158,10 @@
                     } catch (e) { return ''; }
                 },
         addButton() {
-            if (!pageNum) return;
+            if (!pageNum) { base.pageMiss(); return; }
             let $toolWrap;
             let $button = $(`<div class="ali-button pl-button"><svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" width="16" height="16"><path d="M853.333 938.667H170.667a85.333 85.333 0 0 1-85.334-85.334v-384A85.333 85.333 0 0 1 170.667 384H288a32 32 0 0 1 0 64H170.667a21.333 21.333 0 0 0-21.334 21.333v384a21.333 21.333 0 0 0 21.334 21.334h682.666a21.333 21.333 0 0 0 21.334-21.334v-384A21.333 21.333 0 0 0 853.333 448H736a32 32 0 0 1 0-64h117.333a85.333 85.333 0 0 1 85.334 85.333v384a85.333 85.333 0 0 1-85.334 85.334z" fill="#fff"/><path d="M715.03 543.552a32.81 32.81 0 0 0-46.251 0L554.005 657.813v-540.48a32 32 0 0 0-64 0v539.734L375.893 543.488a32.79 32.79 0 0 0-46.229 0 32.427 32.427 0 0 0 0 46.037l169.557 168.811a32.81 32.81 0 0 0 46.251 0l169.557-168.81a32.47 32.47 0 0 0 0-45.974z" fill="#FF9C00"/></svg><span>下载助手</span></div>`);
             if (pageNum === 'home') {
-                                // CSS module 类名前缀随阿里页面改版会变。
-                                // 先用配置里的精准选择器，找不到再回退到宽松模式。
                 const fallbacks = [
                     panInfo.btn.home,
                     '[class*="header--"] [class*="actions--"]',
@@ -2332,7 +2212,6 @@
                         if (res && res.url) selectedFiles[i].downloadUrl = res.url;
                     });
                 } catch (e) {
-                                        // base.post 对 4xx 会抛出服务端原始错误，这里按原文判定是不是 token 失效
                     Swal.close();
                     const m = (e && e.message) || '';
                     if (/AccessTokenInvalid|token/i.test(m)) {
@@ -2370,7 +2249,6 @@
             let rpc = base._rpcConfig();
             if (!rpc) return 'fail';
             let url = rpc.url;
-                                                // 阿里 CDN 看到非浏览器 UA 就 403，把它当成爬虫处理。
                         const UA = navigator.userAgent;
                         let rpcData = {
                             id: new Date().getTime(),
@@ -2397,7 +2275,6 @@
                 let selectedList = [];
                 let tableDom = document.querySelector(panInfo.dom.list);
                 if (tableDom) {
-                                        // 表格视图里选中项挂在 props.selectedKeys 上。
                     let reactObj = base.findReact(tableDom, 1);
                     if (reactObj) {
                         let props = reactObj.pendingProps;
@@ -2414,10 +2291,8 @@
                     return selectedList;
                 }
 
-                                // 网格视图（阿里现在默认渲染的视图）没有 selectedKeys，走 dataSource。
                 let gridDom = document.querySelector(panInfo.dom.grid);
                 if (!gridDom) return [];
-                // 阿里网格视图的 React 树不需要往上找
                 let gridReact = base.findReact(gridDom, 0);
                 if (!gridReact) return [];
                 let dataSource = (gridReact.pendingProps || {}).dataSource || [];
@@ -2486,7 +2361,7 @@
             }
         },
         addButton() {
-            if (!pageNum) return;
+            if (!pageNum) { base.pageMiss(); return; }
             let $toolWrap;
             let $button = $(`<div class="tianyi-button pl-button">下载助手</div>`);
             if (pageNum === 'home') {
@@ -2645,7 +2520,6 @@
             '.file-menu',
             '.source-list-menu',
         ],
-        // 迅雷的 CDN 校验签名 URL 之外还要本地 cookie（userid/deviceid），纯链接过不去
         _getAuthCookie() {
             let keys = ['userid', 'deviceid', 'XLA_CI', 'xl_fp_rt'];
             let parts = [];
@@ -2653,7 +2527,6 @@
                 let v = base.getCookie(k);
                 if (v) parts.push(`${k}=${v}`);
             }
-            // 这串会拼进 aria2c/curl 命令，cookie 值里的引号会截断命令，先滤掉
             return parts.join('; ').replace(/[\\"`$]/g, '');
         },
         convertLinkToAria(link, filename, ua) {
@@ -2661,11 +2534,10 @@
             let cookie = this._getAuthCookie();
             let cookieStr = cookie ? ` --header "Cookie: ${cookie}"` : '';
             let uaStr = ` --header "User-Agent: ${navigator.userAgent}"`;
-            // 同一 URL 开多个 Range 连接会被迅雷 CDN 断开，aria2 只能单线程
+            // 迅雷多 Range 会断开，aria2 只能单线程
             return encodeURIComponent(`aria2c "${link}" --out "${filename}" -x 1 -s 1${cookieStr}${uaStr}`);
         },
         convertLinkToBC(link, filename, ua) {
-            // 迅雷 CDN 认 cookie + UA，缺一个就断连（与 aria2/curl 两条路用的是同一套头）
             return base._bc(link, filename, {
                 'Cookie': this._getAuthCookie(),
                 'User-Agent': ua || navigator.userAgent,
@@ -2697,7 +2569,7 @@
             return null;
         },
         addButton() {
-            if (!pageNum) return;
+            if (!pageNum) { base.pageMiss(); return; }
             let $toolWrap;
             let $button = $(`<div class="xunlei-button pl-button"><i class="xlpfont xlp-download"></i><span style="font-size: 13px;margin-left: 6px;">下载助手</span></div>`);
             if (pageNum === 'home') {
@@ -2713,8 +2585,8 @@
         _smartListen(callback) {
             const checkInterval = 500;
             function check() {
-                callback();
                 setTimeout(check, checkInterval);
+                callback();
             }
             check();
         },
@@ -2873,7 +2745,6 @@
             if (!rpc) return 'fail';
             let url = rpc.url;
             let authCookie = this._getAuthCookie ? this._getAuthCookie() : '';
-            // cookie 和 UA 缺一个，CDN 都会直接断连
             let rpcHeader = authCookie
                 ? [`Cookie: ${authCookie}`, `User-Agent: ${navigator.userAgent}`]
                 : [];
@@ -2981,8 +2852,7 @@
             return encodeURIComponent(`aria2c "${link}" --out "${filename}" --header "User-Agent: ${panInfo.ua}" --header "Cookie: ${String(document.cookie).replace(/[\\"`$]/g, '')}"`);
         },
         convertLinkToBC(link, filename, ua) {
-                        // 只带 __pus/__puus 时 CDN 回 412「需要登录」，得给完整 jar；
-                        // 与 aria2/RPC 那条能用的路径保持同一套头。
+                        // 只带 __pus/__puus 会 412，要给完整 cookie
             return base._bc(link, filename, {
                 'Referer': `${location.origin}/`,
                 'User-Agent': ua || navigator.userAgent,
@@ -2992,7 +2862,6 @@
         convertLinkToCurl(link, filename, ua) {
             let terminal = base.getValue('setting_terminal_type');
             filename = base.fixFilename(filename);
-                        // cookie 要进 shell 命令，先滤掉引号/反引号/$：既防命令被截断，也堵注入
             return encodeURIComponent(`${terminal !== 'wp' ? 'curl' : 'curl.exe'} -L -C - "${link}" -o "${filename}" -A "${panInfo.ua}" -b "${String(document.cookie).replace(/[\\"`$]/g, '')}"`);
         },
         addPageListener() {
@@ -3012,7 +2881,7 @@
             });
         },
         addButton() {
-            if (!pageNum) return;
+            if (!pageNum) { base.pageMiss(); return; }
             let $toolWrap;
             let $button = $(`<div class="quark-button pl-button"><svg width="22" height="22" xmlns="http://www.w3.org/2000/svg"><g fill="none" fill-rule="evenodd" stroke="#555" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 2-2z"/><path d="M14 8h1.553c.85 0 1.16.093 1.47.267.311.174.556.43.722.756.166.326.255.65.255 1.54v4.873c0 .892-.089 1.215-.255 1.54-.166.327-.41.583-.722.757-.31.174-.62.267-1.47.267H6.447c-.85 0-1.16-.093-1.47-.267a1.778 1.778 0 01-.722-.756c-.166-.326-.255-.65-.255-1.54v-4.873c0-.892.089-1.215.255-1.54.166-.327.41-.583.722-.757.31-.174.62-.267 1.47-.267H11"/><path stroke-linecap="round" stroke-linejoin="round" d="M11 3v10"/></g></svg><b>下载助手</b></div>`);
             if (pageNum === 'home') {
@@ -3022,8 +2891,7 @@
                 });
             }
         },
-                // 夸克给每个会话发一个加速 token；没它 CDN 就派到限速节点（~30KB/s）。
-                // 请求体里带上这个 token，CDN 就把下载路由到高速节点了。
+                // 夸克不给 token 就派到限速节点，约 30KB/s
         async getAccelToken() {
             const now = Date.now();
             const cached = base.getValue('quark_accel_token');
@@ -3147,7 +3015,6 @@
             }
         },
         detectPage() {
-            // 页面是 hash 路由，pathname 就能区分
             let path = location.pathname;
             if (/^\/(list)/.test(path)) return 'home';
             return '';
@@ -3192,7 +3059,7 @@
             });
         },
         addButton() {
-            if (!pageNum) return;
+            if (!pageNum) { base.pageMiss(); return; }
             let $toolWrap;
             let $button = $(`<div class="yidong-button pl-button">下载助手</div>`);
             if (pageNum === 'home') {
@@ -3446,8 +3313,7 @@
             }
         }
     };
-    // 注入时机用 document-start：MV3 下 document-idle 会因注册时序竞态整轮跳过（TM FAQ Q208 / issue #2126）。
-    // 但初始化逻辑依赖 DOM（$('body').append、document.querySelector），所以等 DOM ready 再跑 main.init()。
+    // document-start 时 DOM 未就绪，等 DOMContentLoaded 再初始化
     const startInit = () => main.init();
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', startInit, { once: true });
