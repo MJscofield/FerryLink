@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              FerryLink
 // @namespace         https://github.com/Wjavan/FerryLink
-// @version           1.3.1
+// @version           1.4.0
 // @author            Wjavan
 // @description       支持百度/阿里/天翼/迅雷/夸克/移动六大网盘直链下载。支持 HTTP/JSON-RPC/cURL，推送至 IDM/XDown/Aria2/NDM/Motrix/终端。基于油小猴(youxiaohou.com)的网盘直链下载助手修改。
 // @copyright         2026, Wjavan (https://github.com/Wjavan)
@@ -94,7 +94,8 @@
     //   bc     BC              bc:// 调起本机客户端
     //   bc-rpc BC-RPC          BitComet 远程下载
     const PROTOCOLS = {
-        browser:  [{ id: 'http',   name: 'HTTP 直链',     group: 'link', act: 'nav'  }],
+        browser:  [{ id: 'http',   name: 'HTTP 直链',     group: 'link', act: 'nav'  },
+                   { id: 'seg',    name: '多链下载',    group: 'link', act: 'nav'  }],
         idm:      [{ id: 'idm',    name: '本地 HTTP API', group: 'api',  act: 'push' }],
         aria2:    [{ id: 'aria2c', name: 'Aria2c',         group: 'cli',  act: 'copy' },
                    { id: 'rpc',    name: 'JSON-RPC',      group: 'api',  act: 'push' }],
@@ -122,8 +123,9 @@
         aria2c: '生成 aria2c 命令行，适合终端或脚本',
         bc:     '复制 bc:// 地址：粘贴到 BitComet「文件→打开 URL」或地址栏即可调起客户端下载；无需配置端口，需本机已安装 BitComet',
         'bc-rpc': '点击开始下载后先探测 BitComet 远程下载：可用则直接推送（无浏览器弹框）；不可用则自动改用 bc:// 调起本机 BitComet 客户端',
+        seg:    '开 4 路并发分段取回再合并存盘，单连接被限速时能叠加带宽；节点过慢会自动停手',
     };
-    const PROTO_ORDER = ['http', 'idm', 'rpc', 'curl', 'aria2c', 'bc', 'bc-rpc'];
+    const PROTO_ORDER = ['http', 'seg', 'idm', 'rpc', 'curl', 'aria2c', 'bc', 'bc-rpc'];
     const ALL_PROTOCOLS = PROTO_GROUPS.map(g => {
         const seen = {};
         Object.keys(PROTOCOLS).forEach(dl => PROTOCOLS[dl].forEach(p => {
@@ -247,14 +249,14 @@
         },
         migrate() {
             const MARK = 'ferrylink_migrated_version';
-            const VERSION = '1.3.1';
+            const VERSION = '1.4.0';
             try {
                 if (GM_getValue(MARK, '') === VERSION) return;
                 ['shareToken', 'share_token', 'ferrylink_last_downloader', 'ferrylink_last_protocol'].forEach((k) => {
                     try { GM_deleteValue(k); localStorage.removeItem(k); } catch (e) {}
                 });
                 LEGACY_LOCAL_KEYS.forEach((k) => {
-                    // GM 没有就从 localStorage 拉一份；即使已有值也要清原来的，否则旧条目残留
+                    // 存量凭据搬到 GM 存储后清掉原处，不留副本
                     try { base.getStorage(k); } catch (e) {}
                     try { localStorage.removeItem(k); } catch (e) {}
                 });
@@ -857,15 +859,15 @@
                 this.showSetting();
             });
         },
-        panelNotice(text, type) {
+        panelNotice(text, type, ms) {
             base._lastNotice = text;
             $('.pl-dl-toast').remove();
-            const $t = $(`<div class="pl-dl-toast"><span>${base.esc(text)}</span></div>`);
+            const $t = $(`<div class="pl-dl-toast${type ? ' pl-dl-toast-' + type : ''}"><span>${base.esc(text)}</span></div>`);
             $t.attr('role', type === 'error' ? 'alert' : 'status');
             $('body').append($t);
             $t.hide().fadeIn(180);
             clearTimeout(this._noticeTimer);
-            this._noticeTimer = setTimeout(() => { $t.fadeOut(200, () => $t.remove()); }, 2500);
+            this._noticeTimer = setTimeout(() => { $t.fadeOut(200, () => $t.remove()); }, ms || 2500);
         },
         createTip() {
             doc.on('click', '.pl-dl-chip[data-type="downloader"]', (e) => {
@@ -1083,6 +1085,7 @@
             return downloadState.downloader ? '可用协议' : '全部协议（选择下载器后自动筛选）';
         },
         _protoChip(p) {
+            if (p.id === 'seg' && !/xunlei\.com/.test(String(location && location.host || ''))) return '';
             const active = downloadState.protocol === p.id ? ' active' : '';
             return `<div class="pl-dl-chip${active}" data-type="protocol" data-id="${p.id}" title="${base.esc(PROTO_TITLES[p.id] || '')}">${p.name}</div>`;
         },
@@ -1094,7 +1097,7 @@
                         <div class="pl-dl-chips">${g.items.map(p => base._protoChip(p)).join('')}</div>
                     </div>`).join('');
             }
-            return PROTOCOLS[downloadState.downloader].map(p => base._protoChip(p)).join('');
+            return PROTOCOLS[downloadState.downloader].map(p => base._protoChip(p)).filter(Boolean).join('');
         },
         _updateProtocolChips() {
             const $c = $('#pl-dl-protocol-chips');
@@ -1127,11 +1130,11 @@
                 base.renderDownloadPanel(base.panelFiles || [], base._activeAdapter);
                 if (!r.isConfirmed) return;
             }
-            if (proto.act === 'nav') await base._executeNav(valid, adapter);
+            if (proto.act === 'nav') await base._executeNav(valid, adapter, proto);
             else if (proto.act === 'push') await base._executePush(valid, adapter);
             else if (proto.act === 'copy') await base._executeCopy(valid, adapter);
         },
-        async _executeNav(files, adapter) {
+        async _executeNav(files, adapter, proto) {
             const $btn = $('.listener-dl-execute');
             if (files.length > 5) base.panelNotice('共 ' + files.length + ' 个文件，逐个触发中…如遇拦截可改用推送/复制', 'info');
             $btn.text('正在逐个触发 ' + files.length + ' 个下载…').prop('disabled', true);
@@ -1140,29 +1143,10 @@
                 const f = files[i];
                 const $st = $('.pl-dl-file-status[data-status-index="' + f._idx + '"]');
                 if (base._isBigBaiduLink(f)) {
-                    const $bar = $st.siblings('.pl-dl-file-link');
-                    const linkText = $bar.text();
-                    const dark = $(document.body).hasClass('fl-dark');
-                    const track = dark ? '#3f4041' : '#eef0f2';
-                    let lastLoaded = 0, lastTs = Date.now(), spd = 0;
-                    const paint = (pct, loaded) => {
-                        if (typeof loaded === 'number') {
-                            const now = Date.now(), dt = now - lastTs;
-                            if (dt >= 200) {
-                                const inst = (loaded - lastLoaded) / (dt / 1000);
-                                spd = spd ? spd * 0.6 + inst * 0.4 : inst;
-                                lastLoaded = loaded; lastTs = now;
-                            }
-                        }
-                        $bar.css({
-                            borderRadius: '8px', textAlign: 'center', fontFamily: 'inherit',
-                            background: 'linear-gradient(to right, ' + (color || '#09AAFF') + ' ' + pct + '%, ' + track + ' ' + pct + '%)',
-                                    color: pct > 50 ? '#fff' : (dark ? '#e8eaed' : '#606266'),
-                        }).text('下载中 ' + pct + '%' + (spd > 0 ? ' · ' + base.sizeFormat(spd) + '/s' : ''));
-                    };
-                    paint(0);
-                    const r = await base._streamDownload(f, paint);
-                    $bar.removeAttr('style').text(linkText);
+                    const bar = base._paintBar($st, '下载中');
+                    bar.paint(0);
+                    const r = await base._streamDownload(f, bar.paint);
+                    bar.done();
                     if (r.ok) {
                         ok++;
                         $st.html(MARK_OK);
@@ -1172,6 +1156,15 @@
                         $st.html(MARK_NO);
                         base.panelNotice('下载失败：' + r.why + '。大文件请用 IDM/Aria2/cURL。', 'error');
                     }
+                } else if (proto && proto.id === 'seg' && base._useSegDownload(f)) {
+                    const bar = base._paintBar($st, '多链下载');
+                    bar.paint(0);
+                    const r = await base._segDownload(f, bar.paint);
+                    bar.done();
+                    if (r.ok) {
+                        ok++; $st.html(MARK_OK);
+                        base.panelNotice('已下载 ' + f.filename + '（' + base.sizeFormat(f.rawSize || 0) + '）', 'success', 5000);
+                    } else { fail++; $st.html(MARK_NO); base.panelNotice('多链下载失败：' + r.why, 'error'); }
                 } else {
                     const r = base.iframeDownload(f.dlink);
                     if (r) { ok++; $st.html(MARK_OK); } else { fail++; $st.html(MARK_NO); }
@@ -1180,6 +1173,151 @@
             }
             $btn.text('下载完成：成功 ' + ok + '，失败 ' + fail);
             setTimeout(() => base._updateMainButton(), 4000);
+        },
+        // 进度画在「链接」格上：两个下载路径共用，别各写一份
+        _paintBar($st, label) {
+            const $bar = $st.siblings('.pl-dl-file-link');
+            const linkText = $bar.text();
+            const dark = $(document.body).hasClass('fl-dark');
+            const track = dark ? '#3f4041' : '#eef0f2';
+            let lastPaint = 0, lastLoaded = 0, lastT = 0, spd = 0;
+            const t0 = Date.now();
+            const fmt = (p) => (p >= 100 ? '100' : p.toFixed(1));
+            return {
+                paint: (pct, loaded) => {
+                    const now = Date.now();
+                    // 500ms 一帧界面不闪；速度按 1 秒增量算，窗口太短数字跟着抖
+                    if (pct !== 0 && pct !== 100 && now - lastPaint < 500) return;
+                    lastPaint = now;
+                    if (typeof loaded === 'number' && loaded > 0) {
+                        const dt = (now - lastT) / 1000;
+                        if (lastT && dt >= 1) {
+                            spd = Math.max(0, (loaded - lastLoaded) / dt);
+                            lastLoaded = loaded; lastT = now;
+                        } else if (!lastT) {
+                            const sec = (now - t0) / 1000;
+                            lastLoaded = loaded; lastT = now;
+                            if (sec > 0.5) spd = loaded / sec;
+                        }
+                    }
+                    $bar.css({
+                        borderRadius: '8px', textAlign: 'center', fontFamily: 'inherit',
+                        background: 'linear-gradient(to right, ' + (color || '#09AAFF') + ' ' + pct + '%, ' + track + ' ' + pct + '%)',
+                        color: pct > 50 ? '#fff' : (dark ? '#e8eaed' : '#606266'),
+                    }).text(label + ' ' + fmt(pct) + '%' + (spd > 0 ? ' · ' + base.sizeFormat(spd) + '/s' : ''));
+                },
+                done: () => $bar.removeAttr('style').text(linkText),
+            };
+        },
+        // 只在迅雷上开：其他网盘的 CDN 能不能并发尚未确认
+        _useSegDownload(f) {
+            return /xunlei\.com/.test(location.host) && !!f.dlink;
+        },
+        // 多连接下载：服务端按连接限速，开多个连接线性叠加
+        _segDownload(f, onProgress) {
+            const THREAD = 4;                       // 并发连接数，再多会被服务端拒
+            const CHUNK = 4 * 1024 * 1024;          // 每次请求 4MB：太大就撞超时，太小请求头开销高
+            const WORK_TIMEOUT = 60000;             // 连续 60s 无进展就放弃该块
+            const total = f.rawSize || 0;
+            const headers = base._cdnHeaders(f.dlink);
+            const got = {};
+            const done = [];
+            let finished = 0;
+            const t0 = Date.now();
+            const report = () => {
+                let sum = finished;
+                for (const k in got) sum += got[k];
+                if (onProgress && total > 0) onProgress(Math.min(99.9, sum * 100 / total), sum);
+            };
+            const reqs = new Map();              // 在途请求，看门狗判定慢就全掐掉
+            const abortOne = (idx) => { const rq = reqs.get(idx); if (rq) { try { rq.abort(); } catch (e) { } } };
+            const abortAll = () => { reqs.forEach(r => { try { r.abort(); } catch (e) { } }); reqs.clear(); };
+            let slowAbort = false;
+            const fire = (idx, start, end) => new Promise((resolve) => {
+                let timer = null, settled = false;
+                const finish = (v) => {
+                    settled = true;
+                    if (timer) clearTimeout(timer);
+                    reqs.delete(idx);
+                    resolve(v);
+                };
+                const arm = () => {
+                    if (settled) return;
+                    if (timer) clearTimeout(timer);
+                    timer = setTimeout(() => {
+                        abortOne(idx);
+                        finish({ ok: false, why: '超时' });
+                    }, WORK_TIMEOUT);
+                };
+                arm();
+                reqs.set(idx, GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: f.dlink,
+                    headers: Object.assign({ Range: 'bytes=' + start + '-' + end }, headers),
+                    responseType: 'arraybuffer',
+                    onprogress: (r) => {
+                        if (r && r.loaded) { got[idx] = r.loaded; arm(); report(); }
+                    },
+                    onload: (r) => {
+                        if (r.status === 206 || r.status === 200) { got[idx] = end - start + 1; report(); finish({ ok: true, buf: r.response }); }
+                        else finish({ ok: false, why: 'HTTP ' + r.status });
+                    },
+                    onerror: () => finish({ ok: false, why: '网络错误' }),
+                    ontimeout: () => finish({ ok: false, why: '超时' }),
+                }));
+            });
+            return (async () => {
+                if (!total) return { ok: false, why: '取不到文件大小' };
+                const chunks = [];
+                for (let off = 0; off < total; off += CHUNK) {
+                    chunks.push({ start: off, end: Math.min(off + CHUNK - 1, total - 1) });
+                }
+                let next = 0, fail = 0;
+                const watchdog = setInterval(() => {
+                    const sec = (Date.now() - t0) / 1000;
+                    if (sec < 60) return;
+                    const sum = finished + Object.keys(got).reduce((a, k) => a + got[k], 0);
+                    const rate = sum / 1024 / sec;
+                    if (rate < 60) {
+                        slowAbort = true; abortAll();
+                        clearInterval(watchdog);
+                    }
+                }, 10000);
+                const worker = async (idx) => {
+                    while (next < chunks.length) {
+                        if (slowAbort || fail >= 6) return;
+                        const me = next++;
+                        const c = chunks[me];
+                        let r = null;
+                        for (let t = 0; t < 3; t++) {
+                            if (slowAbort) return;
+                            got[idx] = 0;
+                            r = await fire(idx, c.start, c.end);
+                            if (r.ok && r.buf) break;
+                            // 503 = 服务端嫌连接多，退避要比普通错误久
+                            const wait = /503/.test(r.why || '') ? 2000 * (t + 1) : 500 * (t + 1);
+                            await base.sleep(wait);
+                        }
+                        if (!r || !r.ok || !r.buf) { fail++; got[idx] = 0; return; }
+                        done[me] = r.buf; finished += r.buf.byteLength; delete got[idx]; report();
+                    }
+                };
+                await Promise.all(Array.from({ length: Math.min(THREAD, chunks.length) }, (_, i) => worker(i)));
+                clearInterval(watchdog);
+                if (slowAbort) return { ok: false, why: '节点速度过低，已停止' };
+                const missing = chunks.findIndex((c, i) => !done[i]);
+                if (missing >= 0) return { ok: false, why: fail ? '部分分块失败' : '有分块未完成' };
+                if (onProgress) onProgress(100, total);
+                const url = URL.createObjectURL(new Blob(done));
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = f.filename || 'download';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 120000);
+                return { ok: true };
+            })();
         },
         async _executePush(files, adapter) {
             const $btn = $('.listener-dl-execute');
@@ -1508,6 +1646,8 @@
             .pl-dl-btn-primary:disabled { background: #2a2b2c; color: #5b5e63; }
             .pl-dl-warning-bar { background: #3f2226; color: #e06c75; }
             .pl-dl-toast { background: #2a2b2c; color: #e8eaed; border-color: #3f4041; }
+            .pl-dl-toast-success { border-color: #67c23a; color: #95d475; }
+            .pl-dl-toast-error { border-color: #f56c6c; color: #f89898; }
             .pl-dl-empty { color: #8b8e93; }
             .pl-dl-empty svg { color: #5e6165; }
             .pl-dl-error { color: #e06c75; }
@@ -1627,6 +1767,8 @@
             .pl-dl-warning-bar { background: #fef0f0; color: #cc3235; padding: 6px 12px; border-radius: 6px; font-size: 12px; margin: 8px 0; display: none; }
             .pl-dl-toast { position: fixed; top: 10vh; left: 50%; transform: translateX(-50%); z-index: 2147483647; display: flex; align-items: center; background: #fff; color: #303133; border: 1px solid #e6e8eb; padding: 12px 24px; border-radius: 8px; font-size: 15px; font-weight: 500; box-shadow: 0 4px 16px rgb(28 28 32 / 18%), 0 1px 3px rgb(28 28 32 / 12%); max-width: 80vw; }
             .pl-dl-toast span { word-break: break-all; }
+            .pl-dl-toast-success { border-color: #67c23a; color: #2f7a17; }
+            .pl-dl-toast-error { border-color: #f56c6c; color: #c03639; }
             .pl-dl-empty { padding: 14px 28px; text-align: center; color: #6b7078; font-size: 14px; }
             .pl-dl-empty svg { display: block; margin: 0 auto 10px; color: #c3c8cf; }
             .pl-dl-empty-title { font-size: 15px; }
