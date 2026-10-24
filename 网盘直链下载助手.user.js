@@ -710,9 +710,14 @@
         _bindSettingEvents() {
             if (this.settingBound) return;
             this.settingBound = true;
-            doc.on('click', '.listener-color', async (e) => {
-                base.setValue('setting_theme_color', e.target.dataset.color);
-                message.success('设置成功！');
+            doc.on('click', '.listener-color', (e) => {
+                const picked = e.target.dataset.color;
+                if (base.getValue('setting_theme_color') === picked || base._themeSwitching) return;
+                base.setValue('setting_theme_color', picked);
+                message.success('切换成功！');
+                // 主色要重载才生效，让提示先渲染一帧再走
+                base._themeSwitching = true;
+                setTimeout(() => history.go(0), 150);
             });
             doc.on('keydown', '.listener-color', (e) => {
                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); }
