@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name              FerryLink
 // @namespace         https://github.com/Wjavan/FerryLink
-// @version           1.4.0
+// @version           1.5.0
 // @author            Wjavan
 // @description       支持百度/阿里/天翼/迅雷/夸克/移动六大网盘直链下载。支持 HTTP/JSON-RPC/cURL，推送至 IDM/XDown/Aria2/NDM/Motrix/终端。基于油小猴(youxiaohou.com)的网盘直链下载助手修改。
 // @copyright         2026, Wjavan (https://github.com/Wjavan)
@@ -88,6 +88,7 @@
     // id 是分派键，改名会断执行器，别动
     //   http   HTTP 直链       直链下载
     //   idm    本地 HTTP API   IDM 内置接口 1001
+    //   transcode 转码        备用视频链路，画质/体积可能与原片不同
     //   rpc    JSON-RPC        aria2/Motrix 的 6800 端口
     //   curl   cURL            命令行
     //   aria2c Aria2c          命令行
@@ -95,6 +96,7 @@
     //   bc-rpc BC-RPC          BitComet 远程下载
     const PROTOCOLS = {
         browser:  [{ id: 'http',   name: 'HTTP 直链',     group: 'link', act: 'nav'  },
+                   { id: 'transcode', name: '转码',      group: 'link', act: 'nav'  },
                    { id: 'seg',    name: '多链下载',    group: 'link', act: 'nav'  }],
         idm:      [{ id: 'idm',    name: '本地 HTTP API', group: 'api',  act: 'push' }],
         aria2:    [{ id: 'aria2c', name: 'Aria2c',         group: 'cli',  act: 'copy' },
@@ -117,6 +119,7 @@
     ];
     const PROTO_TITLES = {
         http:   '浏览器直接请求直链下载',
+        transcode: '备用视频链路；画质与体积可能与原片不同',
         idm:    '通过 IDM 本地 HTTP 接口（127.0.0.1:1001）推送任务，需 IDM 已启动且浏览器扩展已注册 client',
         rpc:    '通过 Aria2/Motrix 的 JSON-RPC 接口（HTTP 6800 端口）推送任务，需已开启 RPC',
         curl:   '生成 curl 命令行，适合 Linux/macOS 终端',
@@ -125,7 +128,7 @@
         'bc-rpc': '点击开始下载后先探测 BitComet 远程下载：可用则直接推送（无浏览器弹框）；不可用则自动改用 bc:// 调起本机 BitComet 客户端',
         seg:    '开 4 路并发分段取回再合并存盘，单连接被限速时能叠加带宽；节点过慢会自动停手',
     };
-    const PROTO_ORDER = ['http', 'seg', 'idm', 'rpc', 'curl', 'aria2c', 'bc', 'bc-rpc'];
+    const PROTO_ORDER = ['http', 'transcode', 'seg', 'idm', 'rpc', 'curl', 'aria2c', 'bc', 'bc-rpc'];
     const ALL_PROTOCOLS = PROTO_GROUPS.map(g => {
         const seen = {};
         Object.keys(PROTOCOLS).forEach(dl => PROTOCOLS[dl].forEach(p => {
@@ -249,7 +252,7 @@
         },
         migrate() {
             const MARK = 'ferrylink_migrated_version';
-            const VERSION = '1.4.0';
+            const VERSION = '1.5.0';
             try {
                 if (GM_getValue(MARK, '') === VERSION) return;
                 ['shareToken', 'share_token', 'ferrylink_last_downloader', 'ferrylink_last_protocol'].forEach((k) => {
@@ -903,6 +906,7 @@
                 $('.pl-dl-chip[data-type="protocol"]').removeClass('active');
                 $(e.currentTarget).addClass('active');
                 base._updateMainButton();
+                base._paintLinkCells();
             });
             doc.on('click', '.listener-dl-execute', async () => {
                 if (!downloadState.downloader || !downloadState.protocol) return;
@@ -922,7 +926,8 @@
             });
             doc.on('click', '.listener-dl-copy-link', (e) => {
                 if (!base.panelFiles || !base.panelFiles.length) return;
-                const links = base.panelFiles.filter(f => !f.isFolder && f.dlink && /^https?:\/\//.test(f.dlink)).map(f => f.dlink);
+                const useMedia = downloadState.protocol === 'transcode' && base._hasMediaLink();
+                const links = base.panelFiles.filter(f => !f.isFolder).map(f => useMedia ? f.mediaLink : f.dlink).filter(u => u && /^https?:\/\//.test(u));
                 const $btn = $(e.currentTarget);
                 const old = $btn.text();
                 if (!links.length) { $btn.text('没有可复制的链接'); setTimeout(() => $btn.text(old), 1500); return; }
@@ -1053,6 +1058,7 @@
                 willClose: () => { base._resetData(); },
             });
             base._updateMainButton();
+            base._paintLinkCells();
         },
         renderErrorPanel(errMsg, adapter) {
             base._activeAdapter = adapter;
@@ -1078,6 +1084,12 @@
                 $(`.pl-dl-chip[data-type="protocol"][data-id="${downloadState.protocol}"]`).addClass('active');
             }
             if (!downloadState.protocol) { $btn.prop('disabled', true).text('请先选择下载协议'); return; }
+            // 无转码档时回落，别把无效选择留给用户
+            if (downloadState.protocol === 'transcode' && !base._hasMediaLink()) {
+                downloadState.protocol = 'http';
+                $('.pl-dl-chip[data-type="protocol"]').removeClass('active');
+                $('.pl-dl-chip[data-type="protocol"][data-id="http"]').addClass('active');
+            }
             const proto = protos.find(p => p.id === downloadState.protocol);
             if (!proto) { $btn.prop('disabled', true).text('请先选择下载协议'); return; }
             $btn.prop('disabled', false);
@@ -1089,8 +1101,14 @@
         _protocolLabelText() {
             return downloadState.downloader ? '可用协议' : '全部协议（选择下载器后自动筛选）';
         },
+        // 转码档只有迅雷给，判据只留这一处
+        _hasMediaLink() {
+            return (base.panelFiles || []).some(f => f.mediaLink);
+        },
         _protoChip(p) {
-            if (p.id === 'seg' && !/xunlei\.com/.test(String(location && location.host || ''))) return '';
+            const isXunlei = /xunlei\.com/.test(String(location && location.host || ''));
+            if (p.id === 'seg' && !isXunlei) return '';
+            if (p.id === 'transcode' && (!isXunlei || !base._hasMediaLink())) return '';
             const active = downloadState.protocol === p.id ? ' active' : '';
             return `<div class="pl-dl-chip${active}" data-type="protocol" data-id="${p.id}" title="${base.esc(PROTO_TITLES[p.id] || '')}">${p.name}</div>`;
         },
@@ -1104,17 +1122,39 @@
             }
             return PROTOCOLS[downloadState.downloader].map(p => base._protoChip(p)).filter(Boolean).join('');
         },
+        // 落选提示只在多选时给
+        _paintLinkCells() {
+            const useMedia = downloadState.protocol === 'transcode' && base._hasMediaLink();
+            const missTip = useMedia && (base.panelFiles || []).length > 1;
+            (base.panelFiles || []).forEach((f, i) => {
+                const url = (useMedia ? f.mediaLink : f.dlink) || '';
+                const ok = /^https?:\/\//.test(url);
+                const text = ok ? url : (f.isFolder ? '文件夹请进入后选择文件' : (missTip ? '该文件没有转码档' : (url || '该文件未返回下载链接（可能已失效或被禁止下载）')));
+                const $row = $('.pl-dl-file-row[data-index="' + i + '"]');
+                $row.toggleClass('pl-dl-gray', !!f.isFolder || !ok);
+                $row.children('.pl-dl-file-link').text(text).attr('title', text);
+            });
+        },
         _updateProtocolChips() {
             const $c = $('#pl-dl-protocol-chips');
             if (!$c.length) return;
             $('#pl-dl-protocol-label').text(base._protocolLabelText());
             $c.html(base._protocolChipsHtml());
+            base._paintLinkCells();
         },
         async executeAction(files, adapter) {
             if (!downloadState.downloader || !downloadState.protocol) return;
             const protos = PROTOCOLS[downloadState.downloader];
             const proto = protos.find(p => p.id === downloadState.protocol);
             if (!proto) return;
+            // 只换地址不换通道，执行器只认 dlink
+            if (proto.id === 'transcode') {
+                const usable = files.filter(f => !f.isFolder && f.mediaLink && /^https?:\/\//.test(f.mediaLink));
+                const skipped = files.filter(f => !f.isFolder).length - usable.length;
+                if (skipped > 0) base.panelNotice(skipped + ' 个文件没有转码档，已跳过', 'warning');
+                if (!usable.length) return;
+                files = usable.map(f => ({ ...f, dlink: f.mediaLink }));
+            }
             const valid = files.filter(f => !f.isFolder && f.dlink && /^https?:\/\//.test(f.dlink));
             if (!valid.length) { base.panelNotice('没有可操作的文件', 'warning'); return; }
             // 50MB 预扫描只管浏览器下载和 aria2c
@@ -2789,7 +2829,8 @@
             try {
                 if (item.downloadUrl) return {
                     index,
-                    downloadUrl: item.downloadUrl
+                    downloadUrl: item.downloadUrl,
+                    mediaLink: item.mediaLink || ''
                 };
                 let headers = {
                     'content-type': "application/json",
@@ -2880,6 +2921,7 @@
                 sizeStr: base.sizeFormat(+v.size),
                 rawSize: +v.size || 0,
                 dlink: v.downloadUrl && /^https?:\/\//.test(v.downloadUrl) ? v.downloadUrl : '',
+                mediaLink: v.mediaLink && /^https?:\/\//.test(v.mediaLink) ? v.mediaLink : '',
                 isFolder: v.kind === 'drive#folder',
                 raw: v,
             }));
