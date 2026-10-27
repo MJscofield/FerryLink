@@ -312,6 +312,38 @@
                 || /^172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)
                 || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(host);
         },
+        // ── 默认下载器：记住一组选择，打开面板直接可用 ──────────────────
+        defaultSelection() {
+            const dl = base.getValue('setting_default_downloader') || '';
+            const proto = base.getValue('setting_default_protocol') || '';
+            if (!dl || !PROTOCOLS[dl]) return null;
+            if (!PROTOCOLS[dl].some(p => p.id === proto)) return null;
+            return { downloader: dl, protocol: proto };
+        },
+        setDefaultSelection(dl, proto) {
+            base.setValue('setting_default_downloader', dl || '');
+            base.setValue('setting_default_protocol', proto || '');
+        },
+        clearDefaultSelection() {
+            base.deleteValue('setting_default_downloader');
+            base.deleteValue('setting_default_protocol');
+        },
+        _defaultLabel() {
+            const d = base.defaultSelection();
+            if (!d) return '设为默认';
+            const dl = DOWNLOADERS.find(x => x.id === d.downloader);
+            const p = (PROTOCOLS[d.downloader] || []).find(x => x.id === d.protocol);
+            return `默认：${dl ? dl.name : d.downloader} · ${p ? p.name : d.protocol}（点此取消）`;
+        },
+        // 画 chips 之前先套用，状态与界面天然一致，不必事后去点 DOM
+        _applyDefaultSelection() {
+            const d = base.defaultSelection();
+            if (!d) return false;
+            if (downloadState.downloader === d.downloader && downloadState.protocol === d.protocol) return false;
+            downloadState.downloader = d.downloader;
+            downloadState.protocol = d.protocol;
+            return true;
+        },
         _rpcConfig() {
             const rpc = {
                 domain: base.getValue('setting_rpc_domain'),
@@ -935,6 +967,23 @@
                 $btn.text('复制完成：成功 ' + links.length + '，失败 0');
                 setTimeout(() => $btn.text(old), 1500);
             });
+            doc.on('click', '.listener-dl-set-default', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const cur = base.defaultSelection();
+                const same = cur && cur.downloader === downloadState.downloader && cur.protocol === downloadState.protocol;
+                if (same) {
+                    base.clearDefaultSelection();
+                    base.panelNotice('已取消默认下载方式', 'info');
+                } else if (downloadState.downloader && downloadState.protocol) {
+                    base.setDefaultSelection(downloadState.downloader, downloadState.protocol);
+                    base.panelNotice('已设为默认：' + base._defaultLabel().replace(/^默认：/, '').replace(/（点此取消）$/, ''), 'success');
+                } else {
+                    base.panelNotice('请先选择下载器和协议，再设为默认', 'info');
+                    return;
+                }
+                $('#pl-dl-default-btn').text(base._defaultLabel());
+            });
             doc.on('click', '.listener-open-setting', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -1001,6 +1050,7 @@
         renderDownloadPanel(files, adapter) {
             base.panelFiles = files;
             base._activeAdapter = adapter;
+            base._applyDefaultSelection(); // 先套默认，再画 chips
 
             const fileRows = files.map((f, i) => {
                 const gray = f.isFolder || !f.dlink || !/^https?:\/\//.test(f.dlink);
@@ -1032,7 +1082,7 @@
                 <div class="pl-dl-warning-bar" id="pl-dl-rpc-warning">尚未配置 Aria2 / Motrix 的 RPC 参数，请先完成配置</div>
                 ${emptyHtml}
                 <div class="pl-dl-section">
-                    <div class="pl-dl-section-label">选择下载器</div>
+                    <div class="pl-dl-section-label">选择下载器 <span id="pl-dl-default-btn" class="listener-dl-set-default" title="把当前的下载器 + 协议记为默认，下次打开面板自动选中" style="float:right;cursor:pointer;font-weight:400;text-decoration:underline">${base._defaultLabel()}</span></div>
                     <div class="pl-dl-chips">${dlChips}</div>
                 </div>
                 <div class="pl-dl-section">
